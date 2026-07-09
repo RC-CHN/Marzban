@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable
 
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from app.core.singbox.config import (
     config_hash,
 )
 from app.db.models import (
+    SingBoxEnrollmentToken,
     SingBoxNode as DBSingBoxNode,
     SingBoxNodeLink,
     SingBoxNodeUsage,
@@ -117,6 +119,43 @@ def delete_node(db: Session, dbnode: DBSingBoxNode) -> None:
     db.commit()
     rebuild_full_mesh_links(db)
     rebuild_all_route_policies(db)
+
+
+def create_enrollment_token(
+    db: Session,
+    node: DBSingBoxNode,
+    *,
+    expires_in_seconds: int,
+    created_by: str | None = None,
+) -> tuple[SingBoxEnrollmentToken, str]:
+    token = secrets.token_urlsafe(32)
+    enrollment = SingBoxEnrollmentToken(
+        node_id=node.id,
+        token_hash=_token_hash(token),
+        expires_at=datetime.utcnow() + timedelta(seconds=expires_in_seconds),
+        created_by=created_by,
+    )
+    db.add(enrollment)
+    db.commit()
+    db.refresh(enrollment)
+    return enrollment, token
+
+
+def get_valid_enrollment(db: Session, token: str) -> SingBoxEnrollmentToken | None:
+    return (
+        db.query(SingBoxEnrollmentToken)
+        .filter(
+            SingBoxEnrollmentToken.token_hash == _token_hash(token),
+            SingBoxEnrollmentToken.used_at.is_(None),
+            SingBoxEnrollmentToken.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+
+
+def consume_enrollment(db: Session, enrollment: SingBoxEnrollmentToken) -> None:
+    enrollment.used_at = datetime.utcnow()
+    db.commit()
 
 
 def rebuild_full_mesh_links(db: Session) -> list[SingBoxNodeLink]:
@@ -475,6 +514,10 @@ def _ports_dict(value) -> dict | None:
 
 def _secret(length: int) -> str:
     return secrets.token_urlsafe(length)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _base64_secret(length: int) -> str:

@@ -150,6 +150,38 @@ class SingBoxDeploymentResponse(BaseModel):
     output: str = ""
 
 
+class SingBoxEnrollmentCreate(BaseModel):
+    expires_in_seconds: int = Field(default=1800, ge=60, le=86400)
+
+
+class SingBoxEnrollmentResponse(BaseModel):
+    node_id: int
+    node_name: str
+    token: str
+    expires_at: datetime
+    bootstrap_url: str
+    command: str
+
+
+class SingBoxNodeEnrollRequest(BaseModel):
+    token: str = Field(min_length=16)
+    node_name: str = Field(min_length=1, max_length=256)
+    node_host: str = Field(min_length=1, max_length=256)
+    node_csr: str = Field(min_length=1)
+    client_csr: str = Field(min_length=1)
+    public_csr: str = Field(min_length=1)
+
+
+class SingBoxNodeEnrollResponse(BaseModel):
+    node_id: int
+    node_name: str
+    config_hash: str
+    expires_at: datetime
+    paths: dict[str, str | None]
+    files: dict[str, str]
+    config: dict
+
+
 class SingBoxUsageRecord(BaseModel):
     node_id: int | None
     node_name: str

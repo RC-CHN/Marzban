@@ -396,6 +396,21 @@ class SingBoxNode(Base):
         foreign_keys="SingBoxNodeLink.to_node_id",
     )
     usages = relationship("SingBoxNodeUsage", back_populates="node", cascade="all, delete-orphan")
+    enrollments = relationship("SingBoxEnrollmentToken", back_populates="node", cascade="all, delete-orphan")
+
+
+class SingBoxEnrollmentToken(Base):
+    __tablename__ = "singbox_enrollment_tokens"
+
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(64), nullable=True)
+
+    node = relationship("SingBoxNode", back_populates="enrollments")
 
 
 class SingBoxNodeLink(Base):

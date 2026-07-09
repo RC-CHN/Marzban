@@ -19,6 +19,15 @@ class IssuedNodeCertificate:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class IssuedNodeCsrCertificates:
+    ca_certificate: str
+    node_certificate: str
+    client_certificate: str
+    public_certificate: str
+    expires_at: datetime
+
+
 def ca_paths(ca_dir: str | Path = SINGBOX_NODE_LINK_CA_DIR) -> tuple[Path, Path]:
     root = Path(ca_dir)
     return root / "root-ca.crt", root / "root-ca.key"
@@ -103,6 +112,37 @@ def issue_node_certificate(
     )
 
 
+def issue_node_certificate_from_csrs(
+    node_name: str,
+    public_host: str,
+    *,
+    node_csr: str,
+    client_csr: str,
+    public_csr: str,
+    ca_dir: str | Path = SINGBOX_NODE_LINK_CA_DIR,
+    days: int = 365,
+) -> IssuedNodeCsrCertificates:
+    ensure_ca(ca_dir)
+    ca_crt, ca_key = ca_paths(ca_dir)
+    issued_dir = Path(ca_dir) / "issued" / _safe_name(node_name)
+    issued_dir.mkdir(parents=True, exist_ok=True)
+
+    node_crt = issued_dir / "node.crt"
+    client_crt = issued_dir / "client.crt"
+    public_crt = issued_dir / "public.crt"
+    server_ext = f"subjectAltName={_subject_alt_names(public_host, node_name)}\nextendedKeyUsage=serverAuth\n"
+    _sign_csr(ca_crt, ca_key, node_csr, node_crt, days=days, ext_text=server_ext)
+    _sign_csr(ca_crt, ca_key, client_csr, client_crt, days=days, ext_text="extendedKeyUsage=clientAuth\n")
+    _sign_csr(ca_crt, ca_key, public_csr, public_crt, days=days, ext_text=server_ext)
+    return IssuedNodeCsrCertificates(
+        ca_certificate=ca_crt.read_text(),
+        node_certificate=node_crt.read_text(),
+        client_certificate=client_crt.read_text(),
+        public_certificate=public_crt.read_text(),
+        expires_at=datetime.utcnow() + timedelta(days=days),
+    )
+
+
 def _subject_alt_names(public_host: str, node_name: str) -> str:
     public_host = public_host.strip().strip("[]")
     names = [f"DNS:{node_name}"]
@@ -113,6 +153,10 @@ def _subject_alt_names(public_host: str, node_name: str) -> str:
     else:
         names.insert(0, f"IP:{public_host}")
     return ",".join(dict.fromkeys(names))
+
+
+def _safe_name(value: str) -> str:
+    return "".join(char if char.isalnum() or char in "._-" else "_" for char in value) or "node"
 
 
 def _issue_leaf(
@@ -143,6 +187,42 @@ def _issue_leaf(
         ]
     )
     key_path.chmod(0o600)
+    ext_path.write_text(ext_text)
+    _run(
+        [
+            "openssl",
+            "x509",
+            "-req",
+            "-in",
+            str(csr_path),
+            "-CA",
+            str(ca_crt),
+            "-CAkey",
+            str(ca_key),
+            "-CAcreateserial",
+            "-out",
+            str(cert_path),
+            "-days",
+            str(days),
+            "-sha256",
+            "-extfile",
+            str(ext_path),
+        ]
+    )
+
+
+def _sign_csr(
+    ca_crt: Path,
+    ca_key: Path,
+    csr_text: str,
+    cert_path: Path,
+    *,
+    days: int,
+    ext_text: str,
+) -> None:
+    csr_path = cert_path.with_suffix(".csr")
+    ext_path = cert_path.with_suffix(".ext")
+    csr_path.write_text(csr_text)
     ext_path.write_text(ext_text)
     _run(
         [

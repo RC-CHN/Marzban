@@ -170,6 +170,8 @@ def _rule_for(request: Request) -> tuple[str, int, int] | None:
     subscription_prefix = f"/{XRAY_SUBSCRIPTION_PATH.strip('/')}"
     if path == "/api/admin/token":
         return "login", LOGIN_RATE_LIMIT_REQUESTS, LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    if path in {"/api/singbox/bootstrap.sh", "/api/singbox/nodes/enroll"}:
+        return "singbox-enrollment", LOGIN_RATE_LIMIT_REQUESTS, LOGIN_RATE_LIMIT_WINDOW_SECONDS
     if subscription_prefix != "/" and (path == subscription_prefix or path.startswith(f"{subscription_prefix}/")):
         return "subscription", SUBSCRIPTION_RATE_LIMIT_REQUESTS, SUBSCRIPTION_RATE_LIMIT_WINDOW_SECONDS
     if path.startswith("/api/"):

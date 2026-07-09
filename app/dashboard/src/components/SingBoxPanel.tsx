@@ -17,6 +17,7 @@ import {
   Tbody,
   Td,
   Text,
+  Textarea,
   Th,
   Thead,
   Tooltip,
@@ -80,6 +81,15 @@ type SingBoxStatus = {
   };
 };
 
+type SingBoxEnrollment = {
+  node_id: number;
+  node_name: string;
+  token: string;
+  expires_at: string;
+  bootstrap_url: string;
+  command: string;
+};
+
 const QueryKey = "singbox-panel";
 const DefaultPublicCaPath = "/etc/sing-box/certs/ca.crt";
 const TLSModes: { value: SingBoxTLSMode; label: string }[] = [
@@ -118,6 +128,7 @@ export const SingBoxPanel: FC = () => {
   const [policyUsername, setPolicyUsername] = useState("");
   const [policyExitNodeId, setPolicyExitNodeId] = useState("");
   const [policyProtocols, setPolicyProtocols] = useState(Protocols);
+  const [enrollmentCommand, setEnrollmentCommand] = useState("");
 
   const nodesQuery = useQuery({
     queryKey: [QueryKey, "nodes"],
@@ -195,6 +206,23 @@ export const SingBoxPanel: FC = () => {
       onSuccess: () => {
         invalidate();
         generateSuccessMessage("sing-box config checked", toast);
+      },
+      onError: (e) => {
+        generateErrorMessage(e, toast);
+      },
+    }
+  );
+
+  const createEnrollment = useMutation(
+    (node: SingBoxNode) =>
+      fetch<SingBoxEnrollment>(`/singbox/nodes/${node.id}/enrollment`, {
+        method: "POST",
+        body: { expires_in_seconds: 1800 },
+      }),
+    {
+      onSuccess: (data) => {
+        setEnrollmentCommand(data.command);
+        generateSuccessMessage("sing-box enrollment created", toast);
       },
       onError: (e) => {
         generateErrorMessage(e, toast);
@@ -375,16 +403,28 @@ export const SingBoxPanel: FC = () => {
                         </Tooltip>
                       </Td>
                       <Td isNumeric>
-                        <Tooltip label="Dry-run deploy">
-                          <Button
-                            size="xs"
-                            onClick={() => deployNode.mutate(node)}
-                            isLoading={deployNode.isLoading}
-                            leftIcon={<Icon as={BoltIcon} />}
-                          >
-                            Check
-                          </Button>
-                        </Tooltip>
+                        <HStack justify="flex-end" spacing={2}>
+                          <Tooltip label="Create enrollment command">
+                            <Button
+                              size="xs"
+                              onClick={() => createEnrollment.mutate(node)}
+                              isLoading={createEnrollment.isLoading}
+                              leftIcon={<Icon as={LinkIcon} />}
+                            >
+                              Enroll
+                            </Button>
+                          </Tooltip>
+                          <Tooltip label="Dry-run deploy">
+                            <Button
+                              size="xs"
+                              onClick={() => deployNode.mutate(node)}
+                              isLoading={deployNode.isLoading}
+                              leftIcon={<Icon as={BoltIcon} />}
+                            >
+                              Check
+                            </Button>
+                          </Tooltip>
+                        </HStack>
                       </Td>
                     </Tr>
                   ))}
@@ -446,6 +486,23 @@ export const SingBoxPanel: FC = () => {
                   Add
                 </Button>
               </HStack>
+
+              {enrollmentCommand && (
+                <>
+                  <Divider />
+                  <FormControl>
+                    <FormLabel fontSize="xs">Enrollment command</FormLabel>
+                    <Textarea
+                      size="sm"
+                      value={enrollmentCommand}
+                      isReadOnly
+                      fontFamily="mono"
+                      fontSize="xs"
+                      rows={4}
+                    />
+                  </FormControl>
+                </>
+              )}
 
               <Divider />
 

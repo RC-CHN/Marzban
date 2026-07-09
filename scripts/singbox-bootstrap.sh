@@ -6,6 +6,7 @@ RUNTIME="${RUNTIME:-systemd}"
 NODE_NAME="${NODE_NAME:-}"
 NODE_HOST="${NODE_HOST:-}"
 PANEL_URL="${PANEL_URL:-}"
+ENROLL_TOKEN="${ENROLL_TOKEN:-}"
 NODE_LINK_PORT="${NODE_LINK_PORT:-12443}"
 CONFIG_PATH="${CONFIG_PATH:-/etc/sing-box/config.json}"
 SERVICE_NAME="${SERVICE_NAME:-sing-box}"
@@ -20,6 +21,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/singbox-bootstrap.sh install-node --node-name NAME --node-host HOST [--panel-url URL]
+  scripts/singbox-bootstrap.sh enroll-node --node-name NAME --node-host HOST --panel-url URL --enroll-token TOKEN
   scripts/singbox-bootstrap.sh check
   scripts/singbox-bootstrap.sh restart
   scripts/singbox-bootstrap.sh logs
@@ -69,6 +71,10 @@ parse_args() {
         PANEL_URL="${2:-}"
         shift 2
         ;;
+      --enroll-token)
+        ENROLL_TOKEN="${2:-}"
+        shift 2
+        ;;
       --sing-box-version)
         SING_BOX_VERSION="${2:-}"
         shift 2
@@ -105,12 +111,18 @@ require_node_args() {
   esac
 }
 
+require_enroll_args() {
+  require_node_args
+  [ -n "$PANEL_URL" ] || die "--panel-url is required"
+  [ -n "$ENROLL_TOKEN" ] || die "--enroll-token is required"
+}
+
 install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
-      ca-certificates curl jq openssl iproute2 dnsutils
+      ca-certificates curl jq openssl iproute2 dnsutils tar
   fi
 }
 
@@ -179,6 +191,37 @@ check_sing_box_binary() {
   "$SING_BOX_BIN" version | head -n 1
 }
 
+install_sing_box_binary() {
+  if [ -x "$SING_BOX_BIN" ] && "$SING_BOX_BIN" version 2>/dev/null | head -n 1 | grep -q "$SING_BOX_VERSION"; then
+    log "keeping existing sing-box: $SING_BOX_BIN"
+    return
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64|amd64)
+      arch="amd64"
+      ;;
+    aarch64|arm64)
+      arch="arm64"
+      ;;
+    *)
+      die "unsupported architecture: $(uname -m)"
+      ;;
+  esac
+
+  local tmp_dir package_dir url
+  tmp_dir="$(mktemp -d)"
+  package_dir="sing-box-${SING_BOX_VERSION}-linux-${arch}"
+  url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/${package_dir}.tar.gz"
+  log "downloading sing-box $SING_BOX_VERSION for linux-$arch"
+  curl -fsSL "$url" -o "$tmp_dir/sing-box.tar.gz"
+  tar -xzf "$tmp_dir/sing-box.tar.gz" -C "$tmp_dir"
+  install -m 0755 "$tmp_dir/$package_dir/sing-box" "$SING_BOX_BIN"
+  rm -rf "$tmp_dir"
+  "$SING_BOX_BIN" version | head -n 1
+}
+
 check_config() {
   if command -v "$SING_BOX_BIN" >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
     "$SING_BOX_BIN" check -c "$CONFIG_PATH"
@@ -210,6 +253,7 @@ install_node() {
   require_node_args
   log "installing node $NODE_NAME for $NODE_HOST"
   install_packages
+  install_sing_box_binary
   ensure_directories
   write_placeholder_config
   if [ "$RUNTIME" = "systemd" ]; then
@@ -222,6 +266,134 @@ install_node() {
   log "panel: ${PANEL_URL:-not set}"
   log "node-link files expected under $NODE_LINK_DIR"
   log "public cert files expected under $PUBLIC_CERT_DIR"
+}
+
+write_json_string_field() {
+  local response_path="$1"
+  local jq_expr="$2"
+  local target_path="$3"
+  local mode="$4"
+  [ -n "$target_path" ] || die "empty target path for $jq_expr"
+  install -d -m 0755 "$(dirname "$target_path")"
+  jq -er "$jq_expr" "$response_path" >"$target_path"
+  chmod "$mode" "$target_path"
+}
+
+install_private_key() {
+  local source_path="$1"
+  local target_path="$2"
+  [ -n "$target_path" ] || die "empty private key target path"
+  install -d -m 0755 "$(dirname "$target_path")"
+  install -m 0600 "$source_path" "$target_path"
+}
+
+response_path() {
+  local response_path="$1"
+  local jq_expr="$2"
+  local default_path="$3"
+  local value
+  value="$(jq -r "$jq_expr // empty" "$response_path")"
+  printf '%s\n' "${value:-$default_path}"
+}
+
+generate_csr() {
+  local key_path="$1"
+  local csr_path="$2"
+  local common_name="$3"
+  common_name="${common_name//\//_}"
+  common_name="${common_name//$'\n'/_}"
+  common_name="${common_name//$'\r'/_}"
+  openssl req -newkey rsa:2048 \
+    -keyout "$key_path" \
+    -out "$csr_path" \
+    -nodes \
+    -subj "/CN=$common_name"
+  chmod 600 "$key_path"
+}
+
+enroll_node() {
+  need_root
+  require_enroll_args
+  log "enrolling node $NODE_NAME for $NODE_HOST"
+  install_packages
+  install_sing_box_binary
+  ensure_directories
+
+  local tmp_dir request_path response_path panel
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+  request_path="$tmp_dir/enroll-request.json"
+  response_path="$tmp_dir/enroll-response.json"
+  panel="${PANEL_URL%/}"
+
+  generate_csr "$tmp_dir/node.key" "$tmp_dir/node.csr" "$NODE_NAME"
+  generate_csr "$tmp_dir/client.key" "$tmp_dir/client.csr" "$NODE_NAME-client"
+  generate_csr "$tmp_dir/public.key" "$tmp_dir/public.csr" "$NODE_HOST"
+
+  jq -n \
+    --arg token "$ENROLL_TOKEN" \
+    --arg node_name "$NODE_NAME" \
+    --arg node_host "$NODE_HOST" \
+    --rawfile node_csr "$tmp_dir/node.csr" \
+    --rawfile client_csr "$tmp_dir/client.csr" \
+    --rawfile public_csr "$tmp_dir/public.csr" \
+    '{
+      token: $token,
+      node_name: $node_name,
+      node_host: $node_host,
+      node_csr: $node_csr,
+      client_csr: $client_csr,
+      public_csr: $public_csr
+    }' >"$request_path"
+
+  curl -fsSL \
+    -H "Content-Type: application/json" \
+    --data-binary "@$request_path" \
+    "$panel/api/singbox/nodes/enroll" \
+    -o "$response_path"
+
+  local node_link_ca_path node_cert_path node_key_path client_cert_path client_key_path
+  local public_cert_path public_key_path public_ca_path config_next
+  node_link_ca_path="$(response_path "$response_path" '.paths.node_link_ca_cert_path' "$NODE_LINK_DIR/ca.crt")"
+  node_cert_path="$(response_path "$response_path" '.paths.node_link_cert_path' "$NODE_LINK_DIR/node.crt")"
+  node_key_path="$(response_path "$response_path" '.paths.node_link_key_path' "$NODE_LINK_DIR/node.key")"
+  client_cert_path="$(response_path "$response_path" '.paths.node_link_client_cert_path' "$NODE_LINK_DIR/client.crt")"
+  client_key_path="$(response_path "$response_path" '.paths.node_link_client_key_path' "$NODE_LINK_DIR/client.key")"
+  public_cert_path="$(response_path "$response_path" '.paths.public_tls_cert_path' "$PUBLIC_CERT_DIR/fullchain.pem")"
+  public_key_path="$(response_path "$response_path" '.paths.public_tls_key_path' "$PUBLIC_CERT_DIR/privkey.pem")"
+  public_ca_path="$(response_path "$response_path" '.paths.public_tls_ca_cert_path' "$PUBLIC_CERT_DIR/ca.crt")"
+  CONFIG_PATH="$(response_path "$response_path" '.paths.config_path' "$CONFIG_PATH")"
+
+  write_json_string_field "$response_path" '.files["node-link-ca.crt"]' "$node_link_ca_path" 0644
+  write_json_string_field "$response_path" '.files["node.crt"]' "$node_cert_path" 0644
+  write_json_string_field "$response_path" '.files["client.crt"]' "$client_cert_path" 0644
+  write_json_string_field "$response_path" '.files["public.crt"]' "$public_cert_path" 0644
+  write_json_string_field "$response_path" '.files["public-ca.crt"]' "$public_ca_path" 0644
+  install_private_key "$tmp_dir/node.key" "$node_key_path"
+  install_private_key "$tmp_dir/client.key" "$client_key_path"
+  install_private_key "$tmp_dir/public.key" "$public_key_path"
+
+  config_next="${CONFIG_PATH}.next"
+  install -d -m 0755 "$(dirname "$CONFIG_PATH")"
+  jq '.config' "$response_path" >"$config_next"
+  "$SING_BOX_BIN" check -c "$config_next"
+  if [ -f "$CONFIG_PATH" ]; then
+    cp "$CONFIG_PATH" "${CONFIG_PATH}.prev"
+  fi
+  mv "$config_next" "$CONFIG_PATH"
+  chmod 0644 "$CONFIG_PATH"
+
+  if [ "$RUNTIME" = "systemd" ]; then
+    install_systemd_service
+    systemctl restart "$SERVICE_NAME"
+  else
+    log "docker runtime selected; config and certs were written but service restart is external"
+  fi
+
+  log "node enrolled"
+  log "config hash: $(jq -r '.config_hash' "$response_path" 2>/dev/null || true)"
+  rm -rf "$tmp_dir"
+  trap - EXIT
 }
 
 init_panel_ca() {
@@ -292,6 +464,9 @@ parse_args "$@"
 case "$COMMAND" in
   install-node)
     install_node
+    ;;
+  enroll-node)
+    enroll_node
     ;;
   install|install-panel)
     install_panel

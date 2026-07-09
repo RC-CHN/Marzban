@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException
+import shlex
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from app.core.singbox import ca as singbox_ca
@@ -24,6 +27,10 @@ from app.models.admin import Admin
 from app.models.singbox import (
     SingBoxDeploymentRequest,
     SingBoxDeploymentResponse,
+    SingBoxEnrollmentCreate,
+    SingBoxEnrollmentResponse,
+    SingBoxNodeEnrollRequest,
+    SingBoxNodeEnrollResponse,
     SingBoxNodeCreate,
     SingBoxNodeLinkResponse,
     SingBoxNodeModify,
@@ -49,6 +56,12 @@ class ExitPolicyRequest(BaseModel):
     entry_node: str = "node-a"
     auth_user: str = "u1"
     exit_node: str | None = None
+
+
+@router.get("/bootstrap.sh", response_class=PlainTextResponse, include_in_schema=False)
+def get_bootstrap_script():
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "singbox-bootstrap.sh"
+    return script_path.read_text()
 
 
 @router.get("/status")
@@ -122,6 +135,60 @@ def create_node(
         raise HTTPException(status_code=409, detail=f'Node "{payload.name}" already exists') from exc
 
 
+@router.post("/nodes/enroll", response_model=SingBoxNodeEnrollResponse, responses={403: responses._403})
+def enroll_node(
+    payload: SingBoxNodeEnrollRequest,
+    db: Session = Depends(get_db),
+):
+    enrollment = production.get_valid_enrollment(db, payload.token)
+    if enrollment is None:
+        raise HTTPException(status_code=403, detail="Invalid or expired enrollment token")
+    node = enrollment.node
+    if node.name != payload.node_name or node.public_host != payload.node_host:
+        raise HTTPException(status_code=400, detail="Enrollment token does not match this node")
+
+    try:
+        issued = singbox_ca.issue_node_certificate_from_csrs(
+            node.name,
+            node.public_host,
+            node_csr=payload.node_csr,
+            client_csr=payload.client_csr,
+            public_csr=payload.public_csr,
+        )
+        config, hash_value = production.build_node_config(db, node.id)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    node.node_link_cert_expires_at = issued.expires_at
+    node.last_config_hash = hash_value
+    production.consume_enrollment(db, enrollment)
+    return SingBoxNodeEnrollResponse(
+        node_id=node.id,
+        node_name=node.name,
+        config_hash=hash_value,
+        expires_at=issued.expires_at,
+        paths={
+            "config_path": node.config_path,
+            "public_tls_cert_path": node.public_tls_cert_path,
+            "public_tls_key_path": node.public_tls_key_path,
+            "public_tls_ca_cert_path": node.public_tls_ca_cert_path,
+            "node_link_ca_cert_path": node.node_link_ca_cert_path,
+            "node_link_cert_path": node.node_link_cert_path,
+            "node_link_key_path": node.node_link_key_path,
+            "node_link_client_cert_path": node.node_link_client_cert_path,
+            "node_link_client_key_path": node.node_link_client_key_path,
+        },
+        files={
+            "node-link-ca.crt": issued.ca_certificate,
+            "node.crt": issued.node_certificate,
+            "client.crt": issued.client_certificate,
+            "public-ca.crt": issued.ca_certificate,
+            "public.crt": issued.public_certificate,
+        },
+        config=config,
+    )
+
+
 @router.get("/nodes/{node_id}", response_model=SingBoxNodeResponse)
 def get_node(
     node_id: int,
@@ -145,6 +212,41 @@ def update_node(
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
     return production.update_node(db, node, payload)
+
+
+@router.post("/nodes/{node_id}/enrollment", response_model=SingBoxEnrollmentResponse)
+def create_node_enrollment(
+    node_id: int,
+    payload: SingBoxEnrollmentCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: Admin = Depends(Admin.check_sudo_admin),
+):
+    node = production.get_node(db, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    enrollment, token = production.create_enrollment_token(
+        db,
+        node,
+        expires_in_seconds=payload.expires_in_seconds,
+        created_by=admin.username,
+    )
+    base_url = str(request.base_url).rstrip("/")
+    bootstrap_url = f"{base_url}/api/singbox/bootstrap.sh"
+    q = shlex.quote
+    command = (
+        f"curl -fsSL {q(bootstrap_url)} | sudo bash -s -- enroll-node "
+        f"--panel-url {q(base_url)} --enroll-token {q(token)} "
+        f"--node-name {q(node.name)} --node-host {q(node.public_host)}"
+    )
+    return SingBoxEnrollmentResponse(
+        node_id=node.id,
+        node_name=node.name,
+        token=token,
+        expires_at=enrollment.expires_at,
+        bootstrap_url=bootstrap_url,
+        command=command,
+    )
 
 
 @router.delete("/nodes/{node_id}")

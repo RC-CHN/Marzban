@@ -723,43 +723,42 @@ services:
 sudo bash -c "$(curl -sL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh)" @ install
 ```
 
-当前 sing-box POC 还没有实现对应的生产 bootstrap 脚本。上公网前需要补一个一键脚本，避免手工安装 Docker、systemd、证书目录、端口和配置文件时出错。
-
-建议先在本仓库新增：
+当前仓库已经内置 sing-box bootstrap 脚本，并通过控制面暴露下载地址：
 
 ```text
 scripts/singbox-bootstrap.sh
+GET /api/singbox/bootstrap.sh
 ```
 
-后续稳定后再考虑同步到独立脚本仓库，或 fork 原版 `Marzban-scripts` 增加 sing-box 分支。
+公网节点推荐使用 Dashboard 生成一次性 enrollment 命令。节点侧只执行这一条命令，脚本会安装固定版本 sing-box，生成本机私钥和 CSR，向控制面换取由内部 CA 签发的证书和初始配置，执行 `sing-box check` 后启动服务。
+
+后续稳定后可以同步到独立脚本仓库，或 fork 原版 `Marzban-scripts` 增加 sing-box 分支。
 
 ### 子命令
 
-脚本至少支持：
+当前脚本支持：
 
 ```bash
-scripts/singbox-bootstrap.sh install
-scripts/singbox-bootstrap.sh install-node
 scripts/singbox-bootstrap.sh install-panel
-scripts/singbox-bootstrap.sh update
-scripts/singbox-bootstrap.sh restart
+scripts/singbox-bootstrap.sh install-node --node-name node-a --node-host 203.0.113.10
+scripts/singbox-bootstrap.sh enroll-node --node-name node-a --node-host 203.0.113.10 --panel-url https://panel.example.com --enroll-token TOKEN
 scripts/singbox-bootstrap.sh status
-scripts/singbox-bootstrap.sh logs
 scripts/singbox-bootstrap.sh check
-scripts/singbox-bootstrap.sh uninstall
+scripts/singbox-bootstrap.sh restart
+scripts/singbox-bootstrap.sh logs
 ```
 
-建议语义：
+语义：
 
-- `install`：单机安装控制面和本机 sing-box 节点。
-- `install-panel`：只安装控制面、数据库、内部 CA 和管理面板。
-- `install-node`：只安装远端 sing-box 节点。
-- `update`：更新镜像或二进制，并保留旧版本回滚。
-- `restart`：重启控制面和 sing-box。
+- `install-panel`：初始化控制面数据目录和内部 CA，不替代完整 Marzban 部署。
+- `install-node`：只安装远端 sing-box 节点，写入占位配置。
+- `enroll-node`：一次性接入远端节点，完成安装、证书签发、配置下发和启动。
 - `status`：显示服务状态、版本、配置 hash、端口监听。
 - `logs`：显示控制面和 sing-box 日志。
 - `check`：执行环境、端口、证书和 `sing-box check`。
-- `uninstall`：停止服务并可选保留数据目录。
+- `restart`：检查配置后重启 sing-box。
+
+`update` 和 `uninstall` 目前只保留接口语义，生产使用前再补完整回滚和数据保留策略。
 
 ### install-panel 职责
 
@@ -786,19 +785,24 @@ scripts/singbox-bootstrap.sh uninstall
 
 ### install-node 职责
 
-节点安装必须完成：
+`install-node` 只做基础运行环境准备：
 
 - 检查系统版本，生产默认支持 Ubuntu 22.04。
 - 安装或更新固定版本 sing-box。
 - 创建 `/etc/sing-box` 和 `/var/lib/sing-box`。
 - 写入 systemd service 或 Docker Compose 文件。
-- 创建 node-link 证书目录。
-- 接收控制面下发的 `ca.crt`、`node.crt`、`node.key`。
-- 启用 mTLS 时接收 `client.crt`、`client.key`。
-- 写入初始 `/etc/sing-box/config.json`。
+- 写入占位 `/etc/sing-box/config.json`。
 - 执行 `sing-box check -c /etc/sing-box/config.json`。
-- 开放用户入口端口和节点间链路端口。
-- 启动服务并验证端口监听。
+
+`enroll-node` 在此基础上完成真实接入：
+
+- 在节点本机生成 `node.key`、`client.key`、`public.key`，私钥不上传控制面。
+- 生成 node-link、mTLS client、公网入口证书的 CSR。
+- 使用一次性 enrollment token 调用 `POST /api/singbox/nodes/enroll`。
+- 接收控制面 CA、节点证书、公网入口证书和节点配置。
+- 写入 `/etc/sing-box/config.json.next` 并执行 `sing-box check`。
+- 校验通过后备份旧配置为 `.prev`，替换为新配置并重启 sing-box。
+- `/api/singbox/bootstrap.sh` 和 `/api/singbox/nodes/enroll` 使用登录级别的 IP 限速。
 
 节点目录建议：
 
@@ -813,7 +817,17 @@ scripts/singbox-bootstrap.sh uninstall
 
 ### 参数
 
-脚本需要支持非交互参数，便于复制到远端节点执行：
+Dashboard 节点行的 `Enroll` 按钮会生成一次性命令，默认 token 有效期 30 分钟：
+
+```bash
+curl -fsSL https://panel.example.com/api/singbox/bootstrap.sh | sudo bash -s -- enroll-node \
+  --panel-url https://panel.example.com \
+  --enroll-token TOKEN \
+  --node-name node-a \
+  --node-host 203.0.113.10
+```
+
+本仓库内调试可以直接执行脚本：
 
 ```bash
 scripts/singbox-bootstrap.sh install-node \
@@ -830,11 +844,37 @@ scripts/singbox-bootstrap.sh install-node \
 - `--node-name`
 - `--panel-url`
 - `--node-host`
+- `--enroll-token`，只在 `enroll-node` 需要
 - `--sing-box-version`
 - `--node-link-port`
 - `--runtime systemd|docker`
 
-敏感材料不要通过 shell 参数传递。证书、token、私钥应通过临时文件、stdin 或节点注册 API 获取。
+一次性 enrollment token 会出现在管理员复制的命令中，所以必须短有效期、只用一次，并且控制面只存 token hash。节点私钥必须只在节点本机生成和落盘，不能上传到控制面；脚本向控制面提交的是 CSR，不是私钥。
+
+### Enrollment API 流程
+
+控制面 API：
+
+```text
+POST /api/singbox/nodes/{node_id}/enrollment
+POST /api/singbox/nodes/enroll
+GET  /api/singbox/bootstrap.sh
+```
+
+推荐流程：
+
+1. 管理员登录 Dashboard，创建节点，设置 `public_host`、入口/出口开关和入口 TLS 模式。
+2. 点击节点行 `Enroll`，控制面生成一次性 token 并返回完整命令。
+3. 在远端 Ubuntu 22.04 节点执行该命令。
+4. 节点脚本安装 sing-box，生成私钥和 CSR，调用控制面 enrollment API。
+5. 控制面校验 token、节点名和 `public_host`，用内部 CA 签发证书并返回当前节点配置。
+6. 节点脚本写入证书和配置，`sing-box check` 成功后启动服务。
+
+入口 TLS 模式建议：
+
+- `ip-ca`：无域名时的推荐自动化模式，客户端订阅会带控制面 CA。
+- `ip-insecure`：熟人小范围试运行可用，但需要明确接受客户端不校验证书。
+- `system-ca`：需要公网可信证书，one-shot 脚本不会自动申请 Let's Encrypt；如果要用这个模式，需要额外配置域名和证书自动续签。
 
 ### 幂等和回滚
 
@@ -1268,20 +1308,20 @@ rollback_applied
 M1 到 M4 的代码骨架已经落地：
 
 - 真实数据库迁移：`singbox_nodes`、`singbox_node_links`、`singbox_user_credentials`、`singbox_route_policies`、`singbox_node_usages`。
-- Dashboard 基础接入：`SingBoxPanel`，支持节点级入口 TLS 模式控制。
+- Dashboard 基础接入：`SingBoxPanel`，支持节点级入口 TLS 模式控制和节点 enrollment 命令生成。
 - 正式 API：`/api/singbox/...`。
 - 节点配置生成和 hash 记录。
 - local/SSH/manual 三种配置部署模式，以及按节点顺序滚动 deploy API。
-- 控制面内部 CA 初始化和节点证书签发 API。
+- 控制面内部 CA 初始化、节点证书签发 API 和一次性 enrollment token。
 - 生产 TLS 默认安全，节点间 mTLS 由 Docker POC 验证。
 - 订阅路由接入现有 `/sub/{token}`。
 - 粗略节点统计上报和查询。
-- 最小 `scripts/singbox-bootstrap.sh`，支持 `install-node`、`check`、`restart`、`logs`。
+- 最小 `scripts/singbox-bootstrap.sh`，支持 `install-panel`、`install-node`、`enroll-node`、`check/status`、`restart`、`logs`。
 
 仍需生产硬化：
 
 - 控制面 CA 轮换、吊销和节点注册安全流程。
-- 节点注册 token 和下发通道鉴权。
+- enrollment token 审计、吊销和更细的限速策略。
 - 发布审计、配置 diff、人工确认和一键回滚 UI。
 - 更完整的客户端订阅兼容性测试。
 - 真实公网监控告警和日志脱敏策略。
@@ -1297,7 +1337,7 @@ M1 到 M4 的代码骨架已经落地：
 - 生产证书。
 - 手工生成节点配置。
 - systemd 或 Docker 运行 sing-box。
-- 最小 bootstrap 脚本，至少支持 `install-node`、`check`、`restart`、`logs`。
+- 最小 bootstrap 脚本，支持 `enroll-node` 一条命令接入节点。
 - 手工订阅文件。
 - 出口 IP 验证。
 - 回滚脚本。
