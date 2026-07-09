@@ -242,7 +242,7 @@ export const SingBoxPanel: FC = () => {
                 <Thead>
                   <Tr>
                     <Th>Name</Th>
-                    <Th>Host</Th>
+                    <Th>Address</Th>
                     <Th>Entry</Th>
                     <Th>Exit</Th>
                     <Th>Status</Th>
@@ -321,7 +321,7 @@ export const SingBoxPanel: FC = () => {
                   <Input size="sm" value={nodeName} onChange={(e) => setNodeName(e.target.value)} />
                 </FormControl>
                 <FormControl>
-                  <FormLabel fontSize="xs">Host</FormLabel>
+                  <FormLabel fontSize="xs">Address</FormLabel>
                   <Input size="sm" value={nodeHost} onChange={(e) => setNodeHost(e.target.value)} />
                 </FormControl>
                 <Button

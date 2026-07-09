@@ -43,6 +43,7 @@ from config import (
     SINGBOX_NODE_LINK_PORT,
     SINGBOX_SHADOWSOCKS_METHOD,
     SINGBOX_SHADOWSOCKS_SERVER_PASSWORD,
+    SINGBOX_PUBLIC_TLS_CA_CERT_PATH,
     SINGBOX_TLS_CERT_PATH,
     SINGBOX_TLS_INSECURE,
     SINGBOX_TLS_KEY_PATH,
@@ -410,6 +411,7 @@ def _public_tls() -> TLSSettings:
         certificate_path=SINGBOX_TLS_CERT_PATH,
         key_path=SINGBOX_TLS_KEY_PATH,
         client_insecure=SINGBOX_TLS_INSECURE,
+        ca_certificate_path=SINGBOX_PUBLIC_TLS_CA_CERT_PATH or None,
     )
 
 

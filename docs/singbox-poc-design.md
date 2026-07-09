@@ -174,12 +174,12 @@ client -> node-a -> node-b -> node-c -> internet
 {
   "type": "hysteria2",
   "tag": "exit-node-b",
-  "server": "node-b.example.com",
+  "server": "203.0.113.20",
   "server_port": 2443,
   "password": "generated-secret-a-to-b",
   "tls": {
     "enabled": true,
-    "server_name": "node-b.example.com",
+    "server_name": "203.0.113.20",
     "insecure": false
   }
 }
@@ -194,7 +194,7 @@ Docker POC 使用自签证书，允许：
 }
 ```
 
-生产环境必须改为可信证书或节点间固定 CA。
+生产环境节点间必须改为控制面内部 CA，并允许默认使用 IP SAN。
 
 ## 用户出口策略
 
@@ -294,7 +294,7 @@ last_config_hash       string nullable
 last_config_at         datetime nullable
 ```
 
-`public_host` 用于其他节点连接此节点。Docker POC 中可以用 service name，例如 `node-b`。
+`public_host` 用于其他节点连接此节点，可以是公网 IP 或域名。Docker POC 中可以用 service name，例如 `node-b`。
 
 ### 节点链路表
 
@@ -456,12 +456,12 @@ VMess/VLESS/Trojan/Shadowsocks 按 sing-box inbound 文档生成。POC 优先验
 {
   "type": "hysteria2",
   "tag": "exit-node-b",
-  "server": "node-b.example.com",
+  "server": "203.0.113.20",
   "server_port": 2443,
   "password": "secret-a-to-b",
   "tls": {
     "enabled": true,
-    "server_name": "node-b.example.com"
+    "server_name": "203.0.113.20"
   }
 }
 ```

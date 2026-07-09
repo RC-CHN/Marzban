@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -81,7 +82,7 @@ def issue_node_certificate(
         cert_path=node_crt,
         key_path=node_key,
         days=days,
-        ext_text=f"subjectAltName=DNS:{public_host},DNS:{node_name}\nextendedKeyUsage=serverAuth\n",
+        ext_text=f"subjectAltName={_subject_alt_names(public_host, node_name)}\nextendedKeyUsage=serverAuth\n",
     )
     _issue_leaf(
         ca_crt,
@@ -100,6 +101,18 @@ def issue_node_certificate(
         client_key=client_key.read_text(),
         expires_at=datetime.utcnow() + timedelta(days=days),
     )
+
+
+def _subject_alt_names(public_host: str, node_name: str) -> str:
+    public_host = public_host.strip().strip("[]")
+    names = [f"DNS:{node_name}"]
+    try:
+        ipaddress.ip_address(public_host)
+    except ValueError:
+        names.insert(0, f"DNS:{public_host}")
+    else:
+        names.insert(0, f"IP:{public_host}")
+    return ",".join(dict.fromkeys(names))
 
 
 def _issue_leaf(
