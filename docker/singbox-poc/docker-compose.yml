@@ -1,0 +1,61 @@
+services:
+  node-a:
+    image: marzban-singbox-poc:ubuntu2204
+    command: ["sing-box", "run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./generated/node-a/config.json:/etc/sing-box/config.json:ro
+      - ./generated/certs:/etc/sing-box/certs:ro
+      - ./generated/node-link:/etc/sing-box/node-link:ro
+    networks:
+      poc_net:
+        ipv4_address: 172.29.10.11
+
+  node-b:
+    image: marzban-singbox-poc:ubuntu2204
+    command: ["sing-box", "run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./generated/node-b/config.json:/etc/sing-box/config.json:ro
+      - ./generated/certs:/etc/sing-box/certs:ro
+      - ./generated/node-link:/etc/sing-box/node-link:ro
+    networks:
+      poc_net:
+        ipv4_address: 172.29.10.12
+
+  node-c:
+    image: marzban-singbox-poc:ubuntu2204
+    command: ["sing-box", "run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./generated/node-c/config.json:/etc/sing-box/config.json:ro
+      - ./generated/certs:/etc/sing-box/certs:ro
+      - ./generated/node-link:/etc/sing-box/node-link:ro
+    networks:
+      poc_net:
+        ipv4_address: 172.29.10.13
+
+  whoami:
+    image: marzban-singbox-poc:ubuntu2204
+    command: ["python3", "/poc/scripts/whoami.py"]
+    volumes:
+      - ./scripts:/poc/scripts:ro
+    networks:
+      poc_net:
+        ipv4_address: 172.29.10.30
+
+  client:
+    image: marzban-singbox-poc:ubuntu2204
+    command: ["sleep", "infinity"]
+    volumes:
+      - ./generated:/poc/generated:ro
+      - ./generated/certs:/etc/sing-box/certs:ro
+      - ./generated/node-link:/etc/sing-box/node-link:ro
+      - ./generated/clients:/etc/sing-box/clients:ro
+      - ./scripts:/poc/scripts:ro
+    networks:
+      - poc_net
+
+networks:
+  poc_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.10.0/24

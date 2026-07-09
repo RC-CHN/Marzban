@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>sing-box POC Control</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f6f7f9;
+        color: #15171a;
+      }
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+      }
+      section {
+        margin: 0 0 20px;
+        padding: 18px;
+        border: 1px solid #d7dce2;
+        border-radius: 8px;
+        background: white;
+      }
+      label {
+        display: block;
+        margin: 0 0 6px;
+        font-weight: 600;
+      }
+      select,
+      button {
+        min-height: 38px;
+        border: 1px solid #b9c1cb;
+        border-radius: 6px;
+        padding: 0 10px;
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+        background: #1f6feb;
+        color: white;
+        border-color: #1f6feb;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        border-bottom: 1px solid #e3e7ec;
+        padding: 8px;
+      }
+      code {
+        background: #eef1f4;
+        padding: 2px 4px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>sing-box POC Control</h1>
+
+      <section>
+        <h2>User Exit Policy</h2>
+        <label for="exit-node">Exit node for <code>u1</code></label>
+        <select id="exit-node">
+          <option value="">Direct on entry node</option>
+          <option value="node-a">node-a</option>
+          <option value="node-b" selected>node-b</option>
+          <option value="node-c">node-c</option>
+        </select>
+        <button id="apply" type="button">Apply POC Route</button>
+        <p id="state">Current route: node-a entry -> node-b exit</p>
+      </section>
+
+      <section>
+        <h2>Node Links</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Link port</th>
+              <th>Generated links</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>node-a</td><td>enabled</td><td>enabled</td><td>12443</td><td>2</td></tr>
+            <tr><td>node-b</td><td>enabled</td><td>enabled</td><td>12443</td><td>2</td></tr>
+            <tr><td>node-c</td><td>enabled</td><td>enabled</td><td>12443</td><td>2</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Core Config</h2>
+        <p>Use <code>generated/node-a/config.json</code> for the default route and <code>generated/node-a/config-exit-node-c.json</code> for the restart test.</p>
+      </section>
+    </main>
+    <script>
+      const select = document.querySelector("#exit-node");
+      const state = document.querySelector("#state");
+      document.querySelector("#apply").addEventListener("click", () => {
+        const value = select.value || "direct";
+        state.textContent = value === "direct"
+          ? "Current route: node-a entry -> direct"
+          : `Current route: node-a entry -> ${value} exit`;
+      });
+    </script>
+  </body>
+</html>
