@@ -151,6 +151,9 @@ cython_debug/
 .env
 v2ray-core
 xray-core
+hysteria-linux-amd64
+sing-box-*.tar.gz
+sing-box-*-linux-*/libcronet.so
 
 # don't track custom/dev.json/yaml/yml configs, such as xray-custom.json or clash-dev.yaml
 *-custom.json
