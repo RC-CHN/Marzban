@@ -1,0 +1,130 @@
+x-e2e-proxy-env: &e2e-proxy-env
+  HTTP_PROXY: ${E2E_HTTP_PROXY:-}
+  HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
+  ALL_PROXY: ${E2E_ALL_PROXY:-}
+  NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+  http_proxy: ${E2E_HTTP_PROXY:-}
+  https_proxy: ${E2E_HTTPS_PROXY:-}
+  all_proxy: ${E2E_ALL_PROXY:-}
+  no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+
+services:
+  panel:
+    build:
+      context: ../..
+      dockerfile: docker/singbox-bootstrap-e2e/Dockerfile.panel
+      args:
+        HTTP_PROXY: ${E2E_HTTP_PROXY:-}
+        HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
+        ALL_PROXY: ${E2E_ALL_PROXY:-}
+        NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+        http_proxy: ${E2E_HTTP_PROXY:-}
+        https_proxy: ${E2E_HTTPS_PROXY:-}
+        all_proxy: ${E2E_ALL_PROXY:-}
+        no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+    image: marzban-bootstrap-e2e-panel:latest
+    environment:
+      <<: *e2e-proxy-env
+      CORE_RUNTIME: singbox
+      DASHBOARD_ENABLED: "False"
+      DEBUG: "True"
+      UVICORN_PORT: "8000"
+      SINGBOX_EXECUTABLE_PATH: /usr/local/bin/sing-box
+      SUDO_USERNAME: admin
+      SUDO_PASSWORD: admin
+      SQLALCHEMY_DATABASE_URL: sqlite:////var/lib/marzban/e2e.sqlite3
+      RATE_LIMIT_ENABLED: "False"
+    volumes:
+      - panel-data:/var/lib/marzban
+    networks:
+      e2e_net:
+        ipv4_address: 172.30.10.2
+
+  provisioner:
+    image: ubuntu:22.04
+    environment:
+      <<: *e2e-proxy-env
+      PANEL_URL: http://panel:8000
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin
+    volumes:
+      - ./scripts:/e2e/scripts:ro
+      - e2e-state:/state
+    networks:
+      - e2e_net
+    command: ["/bin/bash", "/e2e/scripts/provision-panel.sh"]
+
+  node-a:
+    image: ubuntu:22.04
+    environment:
+      <<: *e2e-proxy-env
+      NODE_NAME: node-a
+      SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+    volumes:
+      - ./scripts:/e2e/scripts:ro
+      - e2e-state:/state:ro
+      - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+    networks:
+      e2e_net:
+        ipv4_address: 172.30.10.11
+    command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
+
+  node-b:
+    image: ubuntu:22.04
+    environment:
+      <<: *e2e-proxy-env
+      NODE_NAME: node-b
+      SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+    volumes:
+      - ./scripts:/e2e/scripts:ro
+      - e2e-state:/state:ro
+      - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+    networks:
+      e2e_net:
+        ipv4_address: 172.30.10.12
+    command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
+
+  node-c:
+    image: ubuntu:22.04
+    environment:
+      <<: *e2e-proxy-env
+      NODE_NAME: node-c
+      SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+    volumes:
+      - ./scripts:/e2e/scripts:ro
+      - e2e-state:/state:ro
+      - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+    networks:
+      e2e_net:
+        ipv4_address: 172.30.10.13
+    command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
+
+  whoami:
+    image: ubuntu:22.04
+    environment:
+      <<: *e2e-proxy-env
+    volumes:
+      - ../singbox-poc/scripts:/poc/scripts:ro
+    networks:
+      e2e_net:
+        ipv4_address: 172.30.10.30
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y --no-install-recommends python3
+        exec python3 /poc/scripts/whoami.py
+
+networks:
+  e2e_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+
+volumes:
+  panel-data:
+  e2e-state:
