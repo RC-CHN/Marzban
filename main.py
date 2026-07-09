@@ -1,13 +1,21 @@
+import os
+
+if __name__ == "__main__" and os.environ.get("CORE_RUNTIME") == "singbox":
+    singbox_config_path = os.environ.get("SINGBOX_STANDALONE_CONFIG_PATH")
+    if singbox_config_path:
+        singbox_executable = os.environ.get("SINGBOX_EXECUTABLE_PATH", "/usr/local/bin/sing-box")
+        os.execvp(singbox_executable, [singbox_executable, "run", "-c", singbox_config_path])
+
+
 import click
 import logging
-import os
 import ssl
 
 import uvicorn
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 
-from app import app, logger
+from app import app, logger  # noqa: F401
 from config import (DEBUG, UVICORN_HOST, UVICORN_PORT, UVICORN_SSL_CERTFILE,
                     UVICORN_SSL_KEYFILE, UVICORN_SSL_CA_TYPE, UVICORN_UDS)
 

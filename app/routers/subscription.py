@@ -1,10 +1,12 @@
+import json
 import re
 from distutils.version import LooseVersion
 
-from fastapi import APIRouter, Depends, Header, Path, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response
 from fastapi.responses import HTMLResponse
 
 from app.db import Session, crud, get_db
+from app.core.singbox import production as singbox_production
 from app.dependencies import get_validated_sub, validate_dates
 from app.models.user import SubscriptionUserResponse, UserResponse
 from app.subscription.share import encode_title, generate_subscription
@@ -14,6 +16,7 @@ from config import (
     SUB_SUPPORT_URL,
     SUB_UPDATE_INTERVAL,
     SUBSCRIPTION_PAGE_TEMPLATE,
+    CORE_RUNTIME,
     USE_CUSTOM_JSON_DEFAULT,
     USE_CUSTOM_JSON_FOR_HAPP,
     USE_CUSTOM_JSON_FOR_STREISAND,
@@ -45,13 +48,37 @@ def get_subscription_user_info(user: UserResponse) -> dict:
     }
 
 
+def generate_runtime_subscription(
+    db: Session,
+    dbuser,
+    client_type: str,
+    entry_node_id: int | None = None,
+) -> tuple[str, str] | None:
+    if CORE_RUNTIME != "singbox" or client_type not in {"sing-box", "clash", "clash-meta"}:
+        return None
+    config_format = "clash" if client_type in {"clash", "clash-meta"} else "sing-box"
+    try:
+        config = singbox_production.build_user_subscription(
+            db,
+            dbuser,
+            entry_node_id=entry_node_id,
+            config_format=config_format,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(config, dict):
+        return json.dumps(config, indent=2), "application/json"
+    return config, "text/yaml"
+
+
 @router.get("/{token}/")
 @router.get("/{token}", include_in_schema=False)
 def user_subscription(
     request: Request,
     db: Session = Depends(get_db),
     dbuser: UserResponse = Depends(get_validated_sub),
-    user_agent: str = Header(default="")
+    user_agent: str = Header(default=""),
+    entry_node_id: int | None = None,
 ):
     """Provides a subscription link based on the user agent (Clash, V2Ray, etc.)."""
     user: UserResponse = UserResponse.model_validate(dbuser)
@@ -79,16 +106,31 @@ def user_subscription(
     }
 
     if re.match(r'^([Cc]lash-verge|[Cc]lash[-\.]?[Mm]eta|[Ff][Ll][Cc]lash|[Mm]ihomo)', user_agent):
-        conf = generate_subscription(user=user, config_format="clash-meta", as_base64=False, reverse=False)
-        return Response(content=conf, media_type="text/yaml", headers=response_headers)
+        runtime_conf = generate_runtime_subscription(db, dbuser, "clash-meta", entry_node_id)
+        if runtime_conf:
+            conf, media_type = runtime_conf
+        else:
+            conf = generate_subscription(user=user, config_format="clash-meta", as_base64=False, reverse=False)
+            media_type = "text/yaml"
+        return Response(content=conf, media_type=media_type, headers=response_headers)
 
     elif re.match(r'^([Cc]lash|[Ss]tash)', user_agent):
-        conf = generate_subscription(user=user, config_format="clash", as_base64=False, reverse=False)
-        return Response(content=conf, media_type="text/yaml", headers=response_headers)
+        runtime_conf = generate_runtime_subscription(db, dbuser, "clash", entry_node_id)
+        if runtime_conf:
+            conf, media_type = runtime_conf
+        else:
+            conf = generate_subscription(user=user, config_format="clash", as_base64=False, reverse=False)
+            media_type = "text/yaml"
+        return Response(content=conf, media_type=media_type, headers=response_headers)
 
     elif re.match(r'^(SFA|SFI|SFM|SFT|[Kk]aring|[Hh]iddify[Nn]ext)', user_agent):
-        conf = generate_subscription(user=user, config_format="sing-box", as_base64=False, reverse=False)
-        return Response(content=conf, media_type="application/json", headers=response_headers)
+        runtime_conf = generate_runtime_subscription(db, dbuser, "sing-box", entry_node_id)
+        if runtime_conf:
+            conf, media_type = runtime_conf
+        else:
+            conf = generate_subscription(user=user, config_format="sing-box", as_base64=False, reverse=False)
+            media_type = "application/json"
+        return Response(content=conf, media_type=media_type, headers=response_headers)
 
     elif re.match(r'^(SS|SSR|SSD|SSS|Outline|Shadowsocks|SSconf)', user_agent):
         conf = generate_subscription(user=user, config_format="outline", as_base64=False, reverse=False)
@@ -168,7 +210,8 @@ def user_subscription_with_client_type(
     dbuser: UserResponse = Depends(get_validated_sub),
     client_type: str = Path(..., regex="sing-box|clash-meta|clash|outline|v2ray|v2ray-json"),
     db: Session = Depends(get_db),
-    user_agent: str = Header(default="")
+    user_agent: str = Header(default=""),
+    entry_node_id: int | None = None,
 ):
     """Provides a subscription link based on the specified client type (e.g., Clash, V2Ray)."""
     user: UserResponse = UserResponse.model_validate(dbuser)
@@ -186,9 +229,14 @@ def user_subscription_with_client_type(
     }
 
     config = client_config.get(client_type)
-    conf = generate_subscription(user=user,
-                                 config_format=config["config_format"],
-                                 as_base64=config["as_base64"],
-                                 reverse=config["reverse"])
+    runtime_conf = generate_runtime_subscription(db, dbuser, client_type, entry_node_id)
+    if runtime_conf:
+        conf, media_type = runtime_conf
+    else:
+        conf = generate_subscription(user=user,
+                                     config_format=config["config_format"],
+                                     as_base64=config["as_base64"],
+                                     reverse=config["reverse"])
+        media_type = config["media_type"]
 
-    return Response(content=conf, media_type=config["media_type"], headers=response_headers)
+    return Response(content=conf, media_type=media_type, headers=response_headers)

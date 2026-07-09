@@ -35,6 +35,36 @@ XRAY_EXCLUDE_INBOUND_TAGS = config("XRAY_EXCLUDE_INBOUND_TAGS", default='').spli
 XRAY_SUBSCRIPTION_URL_PREFIX = config("XRAY_SUBSCRIPTION_URL_PREFIX", default="").strip("/")
 XRAY_SUBSCRIPTION_PATH = config("XRAY_SUBSCRIPTION_PATH", default="sub").strip("/")
 
+CORE_RUNTIME = config("CORE_RUNTIME", default="xray").lower()
+SINGBOX_EXECUTABLE_PATH = config("SINGBOX_EXECUTABLE_PATH", default="/usr/local/bin/sing-box")
+SINGBOX_CONFIG_DIR = config("SINGBOX_CONFIG_DIR", default="/var/lib/marzban/singbox/configs")
+SINGBOX_WORK_DIR = config("SINGBOX_WORK_DIR", default="/var/lib/sing-box")
+SINGBOX_STANDALONE_CONFIG_PATH = config("SINGBOX_STANDALONE_CONFIG_PATH", default="")
+SINGBOX_TLS_CERT_PATH = config("SINGBOX_TLS_CERT_PATH", default="/etc/sing-box/certs/fullchain.pem")
+SINGBOX_TLS_KEY_PATH = config("SINGBOX_TLS_KEY_PATH", default="/etc/sing-box/certs/privkey.pem")
+SINGBOX_TLS_INSECURE = config("SINGBOX_TLS_INSECURE", default=False, cast=bool)
+SINGBOX_NODE_LINK_PROTOCOL = config("SINGBOX_NODE_LINK_PROTOCOL", default="hysteria2")
+SINGBOX_NODE_LINK_PORT = config("SINGBOX_NODE_LINK_PORT", default=12443, cast=int)
+SINGBOX_NODE_LINK_CA_DIR = config("SINGBOX_NODE_LINK_CA_DIR", default="/var/lib/marzban/ca/node-link")
+SINGBOX_NODE_LINK_CA_CERT_PATH = config("SINGBOX_NODE_LINK_CA_CERT_PATH", default="/etc/sing-box/node-link/ca.crt")
+SINGBOX_NODE_LINK_CERT_PATH = config("SINGBOX_NODE_LINK_CERT_PATH", default="/etc/sing-box/node-link/node.crt")
+SINGBOX_NODE_LINK_KEY_PATH = config("SINGBOX_NODE_LINK_KEY_PATH", default="/etc/sing-box/node-link/node.key")
+SINGBOX_NODE_LINK_MTLS = config("SINGBOX_NODE_LINK_MTLS", default=True, cast=bool)
+SINGBOX_NODE_LINK_CLIENT_CERT_PATH = config(
+    "SINGBOX_NODE_LINK_CLIENT_CERT_PATH",
+    default="/etc/sing-box/node-link/client.crt",
+)
+SINGBOX_NODE_LINK_CLIENT_KEY_PATH = config(
+    "SINGBOX_NODE_LINK_CLIENT_KEY_PATH",
+    default="/etc/sing-box/node-link/client.key",
+)
+SINGBOX_RESTART_STRATEGY = config("SINGBOX_RESTART_STRATEGY", default="checked-restart")
+SINGBOX_SHADOWSOCKS_METHOD = config("SINGBOX_SHADOWSOCKS_METHOD", default="2022-blake3-aes-128-gcm")
+SINGBOX_SHADOWSOCKS_SERVER_PASSWORD = config(
+    "SINGBOX_SHADOWSOCKS_SERVER_PASSWORD",
+    default="MDEyMzQ1Njc4OWFiY2RlZg==",
+)
+
 TELEGRAM_API_TOKEN = config("TELEGRAM_API_TOKEN", default="")
 TELEGRAM_ADMIN_ID = config(
     'TELEGRAM_ADMIN_ID',

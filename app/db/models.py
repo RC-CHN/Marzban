@@ -101,6 +101,12 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
+    singbox_credentials = relationship(
+        "SingBoxUserCredential",
+        uselist=False,
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
     @hybrid_property
     def reseted_usage(self) -> int:
@@ -336,6 +342,131 @@ class NodeUsage(Base):
     created_at = Column(DateTime, unique=False, nullable=False)  # one hour per record
     node_id = Column(Integer, ForeignKey("nodes.id"))
     node = relationship("Node", back_populates="usages")
+    uplink = Column(BigInteger, default=0)
+    downlink = Column(BigInteger, default=0)
+
+
+class SingBoxNode(Base):
+    __tablename__ = "singbox_nodes"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(256, collation='NOCASE'), unique=True, nullable=False)
+    public_host = Column(String(256), nullable=False)
+    entry_enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    exit_enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    node_link_port = Column(Integer, nullable=False, default=12443, server_default='12443')
+    public_ports = Column(JSON, nullable=True)
+    deploy_method = Column(String(32), nullable=False, default="manual", server_default="manual")
+    ssh_host = Column(String(256), nullable=True)
+    ssh_user = Column(String(64), nullable=True)
+    ssh_port = Column(Integer, nullable=True)
+    config_path = Column(String(512), nullable=False, default="/etc/sing-box/config.json")
+    restart_command = Column(String(512), nullable=True)
+    public_tls_cert_path = Column(String(512), nullable=True)
+    public_tls_key_path = Column(String(512), nullable=True)
+    node_link_ca_cert_path = Column(String(512), nullable=True)
+    node_link_cert_path = Column(String(512), nullable=True)
+    node_link_key_path = Column(String(512), nullable=True)
+    node_link_client_cert_path = Column(String(512), nullable=True)
+    node_link_client_key_path = Column(String(512), nullable=True)
+    node_link_cert_expires_at = Column(DateTime, nullable=True)
+    node_link_mtls_enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    status = Column(Enum(NodeStatus), nullable=False, default=NodeStatus.connecting)
+    version = Column(String(32), nullable=True)
+    message = Column(String(1024), nullable=True)
+    last_config_hash = Column(String(64), nullable=True)
+    applied_config_hash = Column(String(64), nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    usage_coefficient = Column(Float, nullable=False, server_default=text("1.0"), default=1)
+
+    links_from = relationship(
+        "SingBoxNodeLink",
+        back_populates="from_node",
+        cascade="all, delete-orphan",
+        foreign_keys="SingBoxNodeLink.from_node_id",
+    )
+    links_to = relationship(
+        "SingBoxNodeLink",
+        back_populates="to_node",
+        cascade="all, delete-orphan",
+        foreign_keys="SingBoxNodeLink.to_node_id",
+    )
+    usages = relationship("SingBoxNodeUsage", back_populates="node", cascade="all, delete-orphan")
+
+
+class SingBoxNodeLink(Base):
+    __tablename__ = "singbox_node_links"
+    __table_args__ = (
+        UniqueConstraint('from_node_id', 'to_node_id'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    from_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    to_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    protocol = Column(String(32), nullable=False, default="hysteria2", server_default="hysteria2")
+    auth_name = Column(String(128), nullable=False)
+    password = Column(String(256), nullable=False)
+    mtls_enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    client_cert_expires_at = Column(DateTime, nullable=True)
+    last_rotated_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    from_node = relationship("SingBoxNode", back_populates="links_from", foreign_keys=[from_node_id])
+    to_node = relationship("SingBoxNode", back_populates="links_to", foreign_keys=[to_node_id])
+
+
+class SingBoxUserCredential(Base):
+    __tablename__ = "singbox_user_credentials"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    password = Column(String(256), nullable=False)
+    vmess_uuid = Column(String(36), nullable=False)
+    vless_uuid = Column(String(36), nullable=False)
+    tuic_uuid = Column(String(36), nullable=False)
+    shadowsocks_password = Column(String(256), nullable=False)
+    enabled_protocols = Column(JSON, nullable=False)
+    exit_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="singbox_credentials")
+    exit_node = relationship("SingBoxNode", foreign_keys=[exit_node_id])
+
+
+class SingBoxRoutePolicy(Base):
+    __tablename__ = "singbox_route_policies"
+    __table_args__ = (
+        UniqueConstraint('user_id', 'entry_node_id'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    entry_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    exit_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=True)
+    priority = Column(Integer, nullable=False, default=100, server_default='100')
+    enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
+    entry_node = relationship("SingBoxNode", foreign_keys=[entry_node_id])
+    exit_node = relationship("SingBoxNode", foreign_keys=[exit_node_id])
+
+
+class SingBoxNodeUsage(Base):
+    __tablename__ = "singbox_node_usages"
+    __table_args__ = (
+        UniqueConstraint('created_at', 'node_id'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, unique=False, nullable=False)
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"))
+    node = relationship("SingBoxNode", back_populates="usages")
     uplink = Column(BigInteger, default=0)
     downlink = Column(BigInteger, default=0)
 
