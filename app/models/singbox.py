@@ -17,6 +17,7 @@ SingBoxProtocol = Literal[
     "trojan",
     "shadowsocks",
 ]
+SingBoxPublicTLSMode = Literal["system-ca", "ip-ca", "ip-insecure"]
 
 SUPPORTED_SINGBOX_PROTOCOLS: tuple[SingBoxProtocol, ...] = (
     "hysteria2",
@@ -52,8 +53,10 @@ class SingBoxNodeBase(BaseModel):
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
     config_path: str = "/etc/sing-box/config.json"
     restart_command: str | None = "systemctl restart sing-box"
+    public_tls_mode: SingBoxPublicTLSMode = "system-ca"
     public_tls_cert_path: str | None = "/etc/sing-box/certs/fullchain.pem"
     public_tls_key_path: str | None = "/etc/sing-box/certs/privkey.pem"
+    public_tls_ca_cert_path: str | None = "/etc/sing-box/certs/ca.crt"
     node_link_ca_cert_path: str | None = "/etc/sing-box/node-link/ca.crt"
     node_link_cert_path: str | None = "/etc/sing-box/node-link/node.crt"
     node_link_key_path: str | None = "/etc/sing-box/node-link/node.key"
@@ -80,8 +83,10 @@ class SingBoxNodeModify(BaseModel):
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
     config_path: str | None = None
     restart_command: str | None = None
+    public_tls_mode: SingBoxPublicTLSMode | None = None
     public_tls_cert_path: str | None = None
     public_tls_key_path: str | None = None
+    public_tls_ca_cert_path: str | None = None
     node_link_ca_cert_path: str | None = None
     node_link_cert_path: str | None = None
     node_link_key_path: str | None = None

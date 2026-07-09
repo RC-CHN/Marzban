@@ -224,8 +224,8 @@ SAN = DNS:node-a.example.com,DNS:node-a
 
 | 模式 | 配置 | 适用场景 |
 |---|---|---|
-| A. IP + 自建 CA | 客户端信任自建 CA，`SINGBOX_PUBLIC_TLS_CA_CERT_PATH` 指向客户端侧 CA 文件路径，`SINGBOX_TLS_INSECURE=false` | 熟人长期使用，安全性可接受 |
-| C. IP + 跳过证书校验 | `SINGBOX_TLS_INSECURE=true` | 临时灰度、排障、非常小范围熟人使用 |
+| A. IP + 自建 CA | 节点 `public_tls_mode=ip-ca`，`public_tls_ca_cert_path` 指向客户端侧 CA 文件路径 | 熟人长期使用，安全性可接受 |
+| C. IP + 跳过证书校验 | 节点 `public_tls_mode=ip-insecure` | 临时灰度、排障、非常小范围熟人使用 |
 
 不做 B 模式，也就是不把证书指纹 pinning 作为默认交付路径。原因是客户端支持差异更大，维护成本高于收益。
 
@@ -474,15 +474,17 @@ node-a -> node-b password != node-b -> node-a password
 建议扩展节点表或新增 sing-box 节点表：
 
 ```text
-nodes
+singbox_nodes
   id
   name
   public_host
   entry_enabled
   exit_enabled
   node_link_port
-  tls_cert_path
-  tls_key_path
+  public_tls_mode
+  public_tls_cert_path
+  public_tls_key_path
+  public_tls_ca_cert_path
   node_link_ca_cert_path
   node_link_cert_path
   node_link_key_path
@@ -592,6 +594,8 @@ SINGBOX_NODE_LINK_CLIENT_CERT_PATH=/etc/sing-box/node-link/client.crt
 SINGBOX_NODE_LINK_CLIENT_KEY_PATH=/etc/sing-box/node-link/client.key
 SINGBOX_RESTART_STRATEGY=checked-restart
 ```
+
+用户入口 TLS 模式优先使用每个 `singbox_nodes.public_tls_mode` 控制。`SINGBOX_PUBLIC_TLS_CA_CERT_PATH` 和 `SINGBOX_TLS_INSECURE` 只作为旧配置或未设置节点字段时的兜底默认值。
 
 ## 配置生成和下发流程
 
@@ -901,6 +905,7 @@ app/dashboard/src/components/SingBoxPanel.tsx
 
 - 节点列表和入口/出口开关。
 - 节点公网访问地址、链路数量、状态和配置 hash。
+- 节点级用户入口 TLS 模式：`system-ca`、`ip-ca`、`ip-insecure`。
 - 配置 dry-run 检查。
 - 重建节点链路。
 - 增加节点。
@@ -1242,7 +1247,7 @@ rollback_applied
 M1 到 M4 的代码骨架已经落地：
 
 - 真实数据库迁移：`singbox_nodes`、`singbox_node_links`、`singbox_user_credentials`、`singbox_route_policies`、`singbox_node_usages`。
-- Dashboard 基础接入：`SingBoxPanel`。
+- Dashboard 基础接入：`SingBoxPanel`，支持节点级入口 TLS 模式控制。
 - 正式 API：`/api/singbox/...`。
 - 节点配置生成和 hash 记录。
 - local/SSH/manual 三种配置部署模式，以及按节点顺序滚动 deploy API。

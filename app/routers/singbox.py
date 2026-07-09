@@ -36,8 +36,6 @@ from app.models.singbox import (
 from app.utils import responses
 from config import (
     SINGBOX_NODE_LINK_MTLS,
-    SINGBOX_PUBLIC_TLS_CA_CERT_PATH,
-    SINGBOX_TLS_INSECURE,
 )
 
 router = APIRouter(
@@ -59,18 +57,14 @@ def get_status(
     _: Admin = Depends(Admin.check_sudo_admin),
 ):
     nodes = production.get_nodes(db)
-    if SINGBOX_TLS_INSECURE:
-        public_tls_mode = "ip-insecure"
-    elif SINGBOX_PUBLIC_TLS_CA_CERT_PATH:
-        public_tls_mode = "ip-ca"
-    else:
-        public_tls_mode = "system-ca"
+    public_tls_modes = sorted({node.public_tls_mode or "system-ca" for node in nodes})
     return {
         "runtime": "sing-box",
         "public_tls": {
-            "mode": public_tls_mode,
-            "insecure": SINGBOX_TLS_INSECURE,
-            "ca_configured": bool(SINGBOX_PUBLIC_TLS_CA_CERT_PATH),
+            "mode": public_tls_modes[0] if len(public_tls_modes) == 1 else "node-controlled",
+            "modes": public_tls_modes,
+            "insecure": any(node.public_tls_mode == "ip-insecure" for node in nodes),
+            "ca_configured": any(node.public_tls_mode == "ip-ca" and node.public_tls_ca_cert_path for node in nodes),
         },
         "node_link_tls": {
             "mode": "internal-ca",

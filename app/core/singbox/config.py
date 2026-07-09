@@ -15,6 +15,7 @@ Protocol = Literal[
     "trojan",
     "shadowsocks",
 ]
+PublicTLSMode = Literal["system-ca", "ip-ca", "ip-insecure"]
 
 SUPPORTED_PROTOCOLS: tuple[Protocol, ...] = (
     "hysteria2",
@@ -55,6 +56,10 @@ class SingBoxNode:
     entry_enabled: bool = True
     exit_enabled: bool = True
     public_ports: ProtocolPorts | None = None
+    public_tls_mode: PublicTLSMode = "ip-insecure"
+    public_tls_cert_path: str | None = None
+    public_tls_key_path: str | None = None
+    public_tls_ca_cert_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +229,7 @@ class SingBoxConfigBuilder:
                 for user in self._users_for("hysteria2")
             ],
             "ignore_client_bandwidth": True,
-            "tls": self._server_tls(self.public_tls),
+            "tls": self._public_server_tls(node),
         }
 
     def _tuic_inbound(self, node: SingBoxNode) -> dict[str, Any]:
@@ -243,7 +248,7 @@ class SingBoxConfigBuilder:
             ],
             "congestion_control": "bbr",
             "zero_rtt_handshake": False,
-            "tls": self._server_tls(self.public_tls),
+            "tls": self._public_server_tls(node),
         }
 
     def _anytls_inbound(self, node: SingBoxNode) -> dict[str, Any]:
@@ -256,7 +261,7 @@ class SingBoxConfigBuilder:
                 {"name": user.auth_name, "password": user.credentials.password}
                 for user in self._users_for("anytls")
             ],
-            "tls": self._server_tls(self.public_tls),
+            "tls": self._public_server_tls(node),
         }
 
     def _vmess_inbound(self, node: SingBoxNode) -> dict[str, Any]:
@@ -301,7 +306,7 @@ class SingBoxConfigBuilder:
                 {"name": user.auth_name, "password": user.credentials.password}
                 for user in self._users_for("trojan")
             ],
-            "tls": self._server_tls(self.public_tls),
+            "tls": self._public_server_tls(node),
         }
 
     def _shadowsocks_inbound(self, node: SingBoxNode) -> dict[str, Any]:
@@ -397,7 +402,7 @@ class SingBoxConfigBuilder:
                 "server": entry_node.public_host,
                 "server_port": self._port(entry_node, "hysteria2"),
                 "password": credentials.password,
-                "tls": self._client_tls(entry_node.public_host, self.public_tls),
+                "tls": self._public_client_tls(entry_node),
             }
         if protocol == "tuic":
             return {
@@ -408,7 +413,7 @@ class SingBoxConfigBuilder:
                 "uuid": self._require(credentials.tuic_uuid, user.auth_name, "tuic_uuid"),
                 "password": credentials.password,
                 "congestion_control": "bbr",
-                "tls": self._client_tls(entry_node.public_host, self.public_tls),
+                "tls": self._public_client_tls(entry_node),
             }
         if protocol == "anytls":
             return {
@@ -417,7 +422,7 @@ class SingBoxConfigBuilder:
                 "server": entry_node.public_host,
                 "server_port": self._port(entry_node, "anytls"),
                 "password": credentials.password,
-                "tls": self._client_tls(entry_node.public_host, self.public_tls),
+                "tls": self._public_client_tls(entry_node),
             }
         if protocol == "vmess":
             return {
@@ -448,7 +453,7 @@ class SingBoxConfigBuilder:
                 "server_port": self._port(entry_node, "trojan"),
                 "password": credentials.password,
                 "network": "tcp",
-                "tls": self._client_tls(entry_node.public_host, self.public_tls),
+                "tls": self._public_client_tls(entry_node),
             }
         if protocol == "shadowsocks":
             user_password = self._require(
@@ -492,6 +497,21 @@ class SingBoxConfigBuilder:
         if tls.server_client_certificate_path:
             config["client_certificate_path"] = tls.server_client_certificate_path
         return config
+
+    def _public_server_tls(self, node: SingBoxNode) -> dict[str, Any]:
+        return self._server_tls(self._public_tls_for_node(node))
+
+    def _public_client_tls(self, node: SingBoxNode) -> dict[str, Any]:
+        return self._client_tls(node.public_host, self._public_tls_for_node(node))
+
+    def _public_tls_for_node(self, node: SingBoxNode) -> TLSSettings:
+        fallback = self.public_tls or TLSSettings()
+        return TLSSettings(
+            certificate_path=node.public_tls_cert_path or fallback.certificate_path,
+            key_path=node.public_tls_key_path or fallback.key_path,
+            client_insecure=node.public_tls_mode == "ip-insecure",
+            ca_certificate_path=node.public_tls_ca_cert_path if node.public_tls_mode == "ip-ca" else None,
+        )
 
     def _client_tls(self, server_name: str, tls: TLSSettings | None) -> dict[str, Any]:
         tls = tls or self.public_tls or TLSSettings()

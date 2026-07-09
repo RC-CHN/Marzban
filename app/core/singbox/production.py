@@ -76,8 +76,10 @@ def create_node(db: Session, payload: SingBoxNodeCreate) -> DBSingBoxNode:
         ssh_port=payload.ssh_port,
         config_path=payload.config_path,
         restart_command=payload.restart_command,
+        public_tls_mode=payload.public_tls_mode,
         public_tls_cert_path=payload.public_tls_cert_path,
         public_tls_key_path=payload.public_tls_key_path,
+        public_tls_ca_cert_path=payload.public_tls_ca_cert_path,
         node_link_ca_cert_path=payload.node_link_ca_cert_path,
         node_link_cert_path=payload.node_link_cert_path,
         node_link_key_path=payload.node_link_key_path,
@@ -379,6 +381,10 @@ def _builder_node(node: DBSingBoxNode) -> SingBoxNode:
         entry_enabled=node.entry_enabled,
         exit_enabled=node.exit_enabled,
         public_ports=_protocol_ports(node.public_ports),
+        public_tls_mode=node.public_tls_mode or _default_public_tls_mode(),
+        public_tls_cert_path=node.public_tls_cert_path or SINGBOX_TLS_CERT_PATH,
+        public_tls_key_path=node.public_tls_key_path or SINGBOX_TLS_KEY_PATH,
+        public_tls_ca_cert_path=node.public_tls_ca_cert_path or SINGBOX_PUBLIC_TLS_CA_CERT_PATH or None,
     )
 
 
@@ -413,6 +419,14 @@ def _public_tls() -> TLSSettings:
         client_insecure=SINGBOX_TLS_INSECURE,
         ca_certificate_path=SINGBOX_PUBLIC_TLS_CA_CERT_PATH or None,
     )
+
+
+def _default_public_tls_mode() -> str:
+    if SINGBOX_TLS_INSECURE:
+        return "ip-insecure"
+    if SINGBOX_PUBLIC_TLS_CA_CERT_PATH:
+        return "ip-ca"
+    return "system-ca"
 
 
 def _node_link_tls() -> TLSSettings:

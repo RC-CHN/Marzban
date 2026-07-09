@@ -44,12 +44,18 @@ type SingBoxNode = {
   public_host: string;
   entry_enabled: boolean;
   exit_enabled: boolean;
+  public_tls_mode: SingBoxTLSMode;
+  public_tls_cert_path?: string | null;
+  public_tls_key_path?: string | null;
+  public_tls_ca_cert_path?: string | null;
   node_link_port: number;
   deploy_method: "manual" | "local" | "ssh";
   status: "connected" | "connecting" | "error" | "disabled";
   last_config_hash?: string | null;
   applied_config_hash?: string | null;
 };
+
+type SingBoxTLSMode = "system-ca" | "ip-ca" | "ip-insecure";
 
 type SingBoxLink = {
   id: number;
@@ -62,7 +68,8 @@ type SingBoxLink = {
 
 type SingBoxStatus = {
   public_tls: {
-    mode: "ip-ca" | "ip-insecure" | "system-ca";
+    mode: SingBoxTLSMode | "node-controlled";
+    modes: SingBoxTLSMode[];
     insecure: boolean;
     ca_configured: boolean;
   };
@@ -74,6 +81,12 @@ type SingBoxStatus = {
 };
 
 const QueryKey = "singbox-panel";
+const DefaultPublicCaPath = "/etc/sing-box/certs/ca.crt";
+const TLSModes: { value: SingBoxTLSMode; label: string }[] = [
+  { value: "system-ca", label: "System CA" },
+  { value: "ip-ca", label: "IP CA" },
+  { value: "ip-insecure", label: "Insecure" },
+];
 const Protocols = [
   "hysteria2",
   "tuic",
@@ -88,11 +101,20 @@ const Icon = ({ as: Component }: { as: ElementType }) => (
   <Component width="16px" height="16px" strokeWidth={2} />
 );
 
+const tlsModeLabel = (mode: SingBoxTLSMode | "node-controlled") => {
+  if (mode === "ip-ca") return "IP CA";
+  if (mode === "ip-insecure") return "insecure";
+  if (mode === "node-controlled") return "mixed";
+  return "system CA";
+};
+
 export const SingBoxPanel: FC = () => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [nodeName, setNodeName] = useState("");
   const [nodeHost, setNodeHost] = useState("");
+  const [nodeTlsMode, setNodeTlsMode] = useState<SingBoxTLSMode>("system-ca");
+  const [nodeCaPath, setNodeCaPath] = useState(DefaultPublicCaPath);
   const [policyUsername, setPolicyUsername] = useState("");
   const [policyExitNodeId, setPolicyExitNodeId] = useState("");
   const [policyProtocols, setPolicyProtocols] = useState(Protocols);
@@ -126,6 +148,8 @@ export const SingBoxPanel: FC = () => {
         body: {
           name: nodeName,
           public_host: nodeHost,
+          public_tls_mode: nodeTlsMode,
+          public_tls_ca_cert_path: nodeTlsMode === "ip-ca" ? nodeCaPath : null,
           rebuild_links: true,
         },
       }),
@@ -133,6 +157,8 @@ export const SingBoxPanel: FC = () => {
       onSuccess: () => {
         setNodeName("");
         setNodeHost("");
+        setNodeTlsMode("system-ca");
+        setNodeCaPath(DefaultPublicCaPath);
         invalidate();
         generateSuccessMessage("sing-box node added", toast);
       },
@@ -211,13 +237,9 @@ export const SingBoxPanel: FC = () => {
   const nodes = nodesQuery.data || [];
   const links = linksQuery.data || [];
   const status = statusQuery.data;
-  const publicTlsMode = status?.public_tls.mode;
-  const publicTlsLabel =
-    publicTlsMode === "ip-ca"
-      ? "entry IP CA"
-      : publicTlsMode === "ip-insecure"
-      ? "entry insecure"
-      : "entry system CA";
+  const nodeTlsModes = Array.from(new Set(nodes.map((node) => node.public_tls_mode)));
+  const publicTlsMode = nodeTlsModes.length === 1 ? nodeTlsModes[0] : status?.public_tls.mode;
+  const publicTlsLabel = publicTlsMode ? `entry ${tlsModeLabel(publicTlsMode)}` : "entry TLS";
 
   return (
     <Box
@@ -280,6 +302,7 @@ export const SingBoxPanel: FC = () => {
                   <Tr>
                     <Th>Name</Th>
                     <Th>Address</Th>
+                    <Th>TLS</Th>
                     <Th>Entry</Th>
                     <Th>Exit</Th>
                     <Th>Status</Th>
@@ -292,6 +315,29 @@ export const SingBoxPanel: FC = () => {
                     <Tr key={node.id}>
                       <Td>{node.name}</Td>
                       <Td>{node.public_host}</Td>
+                      <Td>
+                        <Select
+                          size="xs"
+                          value={node.public_tls_mode}
+                          onChange={(event) => {
+                            const mode = event.target.value as SingBoxTLSMode;
+                            updateNode.mutate({
+                              ...node,
+                              public_tls_mode: mode,
+                              public_tls_ca_cert_path:
+                                mode === "ip-ca"
+                                  ? node.public_tls_ca_cert_path || DefaultPublicCaPath
+                                  : node.public_tls_ca_cert_path,
+                            });
+                          }}
+                        >
+                          {TLSModes.map((mode) => (
+                            <option key={mode.value} value={mode.value}>
+                              {mode.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </Td>
                       <Td>
                         <Switch
                           size="sm"
@@ -366,10 +412,34 @@ export const SingBoxPanel: FC = () => {
                     onChange={(e) => setNodeHost(e.target.value)}
                   />
                 </FormControl>
+                <FormControl>
+                  <FormLabel fontSize="xs">TLS</FormLabel>
+                  <Select
+                    size="sm"
+                    value={nodeTlsMode}
+                    onChange={(e) => setNodeTlsMode(e.target.value as SingBoxTLSMode)}
+                  >
+                    {TLSModes.map((mode) => (
+                      <option key={mode.value} value={mode.value}>
+                        {mode.label}
+                      </option>
+                    ))}
+                  </Select>
+                </FormControl>
+                {nodeTlsMode === "ip-ca" && (
+                  <FormControl>
+                    <FormLabel fontSize="xs">CA path</FormLabel>
+                    <Input
+                      size="sm"
+                      value={nodeCaPath}
+                      onChange={(e) => setNodeCaPath(e.target.value)}
+                    />
+                  </FormControl>
+                )}
                 <Button
                   size="sm"
                   onClick={() => addNode.mutate()}
-                  isDisabled={!nodeName || !nodeHost}
+                  isDisabled={!nodeName || !nodeHost || (nodeTlsMode === "ip-ca" && !nodeCaPath)}
                   isLoading={addNode.isLoading}
                   leftIcon={<Icon as={PlusIcon} />}
                 >
