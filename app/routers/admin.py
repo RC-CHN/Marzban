@@ -36,7 +36,7 @@ def admin_token(
     dbadmin = validate_admin(db, form_data.username, form_data.password)
     if not dbadmin:
         retry_after = login_backoff_limiter.record_failure(backoff_key)
-        report.login(form_data.username, form_data.password, client_ip, False)
+        report.login(form_data.username, "🔒", client_ip, False)
         if retry_after:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
