@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from config import ALLOWED_ORIGINS, DOCS, XRAY_SUBSCRIPTION_PATH
+from app.utils.rate_limit import RateLimitMiddleware
 
 __version__ = "0.8.4"
 
@@ -32,6 +33,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
 from app import dashboard, jobs, routers, telegram  # noqa
 from app.routers import api_router  # noqa
 

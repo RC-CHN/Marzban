@@ -10,19 +10,10 @@ from app.dependencies import get_admin_by_username, validate_admin
 from app.models.admin import Admin, AdminCreate, AdminModify, Token
 from app.utils import report, responses
 from app.utils.jwt import create_admin_token
+from app.utils.rate_limit import get_client_ip, login_backoff_key, login_backoff_limiter
 from config import LOGIN_NOTIFY_WHITE_LIST
 
 router = APIRouter(tags=["Admin"], prefix="/api", responses={401: responses._401})
-
-
-def get_client_ip(request: Request) -> str:
-    """Extract the client's IP address from the request headers or client."""
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "Unknown"
 
 
 @router.post("/admin/token", response_model=Token)
@@ -33,16 +24,32 @@ def admin_token(
 ):
     """Authenticate an admin and issue a token."""
     client_ip = get_client_ip(request)
+    backoff_key = login_backoff_key(client_ip, form_data.username)
+    retry_after = login_backoff_limiter.retry_after(backoff_key)
+    if retry_after:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     dbadmin = validate_admin(db, form_data.username, form_data.password)
     if not dbadmin:
+        retry_after = login_backoff_limiter.record_failure(backoff_key)
         report.login(form_data.username, form_data.password, client_ip, False)
+        if retry_after:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts",
+                headers={"Retry-After": str(retry_after)},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    login_backoff_limiter.record_success(backoff_key)
     if client_ip not in LOGIN_NOTIFY_WHITE_LIST:
         report.login(form_data.username, "🔒", client_ip, True)
 

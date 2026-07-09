@@ -99,6 +99,19 @@ GRPC_USER_AGENT_TEMPLATE = config("GRPC_USER_AGENT_TEMPLATE", default="user_agen
 EXTERNAL_CONFIG = config("EXTERNAL_CONFIG", default="", cast=str)
 LOGIN_NOTIFY_WHITE_LIST = [ip.strip() for ip in config("LOGIN_NOTIFY_WHITE_LIST",
                                                        default="", cast=str).split(",") if ip.strip()]
+RATE_LIMIT_ENABLED = config("RATE_LIMIT_ENABLED", default=True, cast=bool)
+RATE_LIMIT_TRUST_PROXY_HEADERS = config("RATE_LIMIT_TRUST_PROXY_HEADERS", default=False, cast=bool)
+API_RATE_LIMIT_REQUESTS = config("API_RATE_LIMIT_REQUESTS", default=300, cast=int)
+API_RATE_LIMIT_WINDOW_SECONDS = config("API_RATE_LIMIT_WINDOW_SECONDS", default=60, cast=int)
+SUBSCRIPTION_RATE_LIMIT_REQUESTS = config("SUBSCRIPTION_RATE_LIMIT_REQUESTS", default=120, cast=int)
+SUBSCRIPTION_RATE_LIMIT_WINDOW_SECONDS = config("SUBSCRIPTION_RATE_LIMIT_WINDOW_SECONDS", default=60, cast=int)
+LOGIN_RATE_LIMIT_REQUESTS = config("LOGIN_RATE_LIMIT_REQUESTS", default=30, cast=int)
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = config("LOGIN_RATE_LIMIT_WINDOW_SECONDS", default=60, cast=int)
+LOGIN_BACKOFF_ENABLED = config("LOGIN_BACKOFF_ENABLED", default=True, cast=bool)
+LOGIN_BACKOFF_FREE_FAILURES = config("LOGIN_BACKOFF_FREE_FAILURES", default=5, cast=int)
+LOGIN_BACKOFF_BASE_SECONDS = config("LOGIN_BACKOFF_BASE_SECONDS", default=2, cast=int)
+LOGIN_BACKOFF_MAX_SECONDS = config("LOGIN_BACKOFF_MAX_SECONDS", default=300, cast=int)
+LOGIN_BACKOFF_RESET_SECONDS = config("LOGIN_BACKOFF_RESET_SECONDS", default=900, cast=int)
 
 USE_CUSTOM_JSON_DEFAULT = config("USE_CUSTOM_JSON_DEFAULT", default=False, cast=bool)
 USE_CUSTOM_JSON_FOR_V2RAYN = config("USE_CUSTOM_JSON_FOR_V2RAYN", default=False, cast=bool)

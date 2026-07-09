@@ -593,9 +593,28 @@ SINGBOX_NODE_LINK_MTLS=true
 SINGBOX_NODE_LINK_CLIENT_CERT_PATH=/etc/sing-box/node-link/client.crt
 SINGBOX_NODE_LINK_CLIENT_KEY_PATH=/etc/sing-box/node-link/client.key
 SINGBOX_RESTART_STRATEGY=checked-restart
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_TRUST_PROXY_HEADERS=false
+API_RATE_LIMIT_REQUESTS=300
+API_RATE_LIMIT_WINDOW_SECONDS=60
+SUBSCRIPTION_RATE_LIMIT_REQUESTS=120
+SUBSCRIPTION_RATE_LIMIT_WINDOW_SECONDS=60
+LOGIN_RATE_LIMIT_REQUESTS=30
+LOGIN_RATE_LIMIT_WINDOW_SECONDS=60
+LOGIN_BACKOFF_ENABLED=true
+LOGIN_BACKOFF_FREE_FAILURES=5
+LOGIN_BACKOFF_BASE_SECONDS=2
+LOGIN_BACKOFF_MAX_SECONDS=300
+LOGIN_BACKOFF_RESET_SECONDS=900
 ```
 
 用户入口 TLS 模式优先使用每个 `singbox_nodes.public_tls_mode` 控制。`SINGBOX_PUBLIC_TLS_CA_CERT_PATH` 和 `SINGBOX_TLS_INSECURE` 只作为旧配置或未设置节点字段时的兜底默认值。
+
+`LOGIN_BACKOFF_*` 是登录失败指数退避配置。失败次数超过 `LOGIN_BACKOFF_FREE_FAILURES` 后返回 `429` 和 `Retry-After`，延迟按 `base * 2^n` 增长并受 `LOGIN_BACKOFF_MAX_SECONDS` 限制。
+
+`RATE_LIMIT_TRUST_PROXY_HEADERS=true` 时会读取 `CF-Connecting-IP`、`X-Real-IP`、`X-Forwarded-For`。只有面板位于可信反代后面，且反代会覆盖这些 header 时才应该打开；直连公网时保持 `false`，避免客户端伪造来源 IP 绕过限速。
+
+当前应用内限速是进程内内存实现，匹配当前 `workers=1` 的运行方式。多 worker、多容器或多面板实例时，必须改成 Redis/数据库共享计数，或者把限速完全放到 Nginx、Caddy、Cloudflare 等反代层。
 
 ## 配置生成和下发流程
 
@@ -1240,6 +1259,8 @@ rollback_applied
 - 防火墙只开放必要端口。
 - SSH 只允许密钥登录。
 - 管理面板开启 HTTPS。
+- 管理 API 和订阅 API 开启限速。
+- 登录失败启用指数退避，并返回 `Retry-After`。
 - 登录失败通知不要包含用户输入的明文密码。
 
 ## 实现状态
@@ -1331,6 +1352,7 @@ M1 到 M4 的代码骨架已经落地：
 - 所有生产配置 `sing-box check` 通过。
 - 节点间使用控制面内部 CA，TLS 校验开启。
 - POC 固定密码全部替换。
+- 管理 API、订阅 API 和登录失败退避限速已开启。
 - 至少 Hysteria2、TUIC、AnyTLS、Trojan 实测通过。
 - 任意入、任意出至少覆盖 3 条真实路径。
 - 有明确回滚文件和回滚命令。
