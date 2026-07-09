@@ -21,7 +21,7 @@ from app.core.singbox.poc import (
 )
 from app.core.singbox import production
 from app.db import Session, crud, get_db
-from app.db.models import SingBoxNodeUsage
+from app.db.models import SingBoxNodeUsage, User
 from app.dependencies import validate_dates
 from app.models.admin import Admin
 from app.models.singbox import (
@@ -37,9 +37,11 @@ from app.models.singbox import (
     SingBoxNodeResponse,
     SingBoxUsageRecord,
     SingBoxUsageReport,
+    SingBoxUserCreate,
     SingBoxUserPolicyModify,
     SingBoxUserPolicyResponse,
 )
+from app.models.user import UserStatus
 from app.utils import responses
 from config import (
     SINGBOX_NODE_LINK_MTLS,
@@ -393,6 +395,39 @@ def get_user_policy(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     credential = production.ensure_user_credentials(db, user)
+    return SingBoxUserPolicyResponse(
+        username=user.username,
+        enabled_protocols=credential.enabled_protocols,
+        exit_node_id=credential.exit_node_id,
+        has_credentials=True,
+    )
+
+
+@router.post("/users", response_model=SingBoxUserPolicyResponse)
+def create_singbox_user(
+    payload: SingBoxUserCreate,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    if payload.exit_node_id is not None and not production.get_node(db, payload.exit_node_id):
+        raise HTTPException(status_code=404, detail="Exit node not found")
+    user = crud.get_user(db, payload.username)
+    if user is None:
+        user = User(
+            username=payload.username,
+            status=UserStatus.active,
+            data_limit=payload.data_limit,
+            expire=payload.expire,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    credential = production.update_user_policy(
+        db,
+        user,
+        enabled_protocols=payload.enabled_protocols,
+        exit_node_id=payload.exit_node_id,
+    )
     return SingBoxUserPolicyResponse(
         username=user.username,
         enabled_protocols=credential.enabled_protocols,

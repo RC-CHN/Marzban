@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SING_BOX_VERSION="${SING_BOX_VERSION:-1.13.14}"
+SING_BOX_BINARY_PATH="${SING_BOX_BINARY_PATH:-}"
 RUNTIME="${RUNTIME:-systemd}"
 NODE_NAME="${NODE_NAME:-}"
 NODE_HOST="${NODE_HOST:-}"
@@ -29,6 +30,7 @@ Usage:
 
 Optional:
   --sing-box-version VERSION   default: 1.13.14
+  --sing-box-binary PATH       install an existing local sing-box binary instead of downloading
   --node-link-port PORT        default: 12443
   --runtime systemd|docker     default: systemd
   --config-path PATH           default: /etc/sing-box/config.json
@@ -77,6 +79,10 @@ parse_args() {
         ;;
       --sing-box-version)
         SING_BOX_VERSION="${2:-}"
+        shift 2
+        ;;
+      --sing-box-binary)
+        SING_BOX_BINARY_PATH="${2:-}"
         shift 2
         ;;
       --node-link-port)
@@ -194,6 +200,13 @@ check_sing_box_binary() {
 install_sing_box_binary() {
   if [ -x "$SING_BOX_BIN" ] && "$SING_BOX_BIN" version 2>/dev/null | head -n 1 | grep -q "$SING_BOX_VERSION"; then
     log "keeping existing sing-box: $SING_BOX_BIN"
+    return
+  fi
+
+  if [ -n "$SING_BOX_BINARY_PATH" ]; then
+    [ -x "$SING_BOX_BINARY_PATH" ] || die "sing-box binary is not executable: $SING_BOX_BINARY_PATH"
+    install -m 0755 "$SING_BOX_BINARY_PATH" "$SING_BOX_BIN"
+    "$SING_BOX_BIN" version | head -n 1
     return
   fi
 

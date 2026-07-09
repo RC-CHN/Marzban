@@ -20,7 +20,6 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql.expression import select, text
 
-from app import xray
 from app.db.base import Base
 from app.models.node import NodeStatus
 from app.models.proxy import (
@@ -30,6 +29,7 @@ from app.models.proxy import (
     ProxyTypes,
 )
 from app.models.user import ReminderType, UserDataLimitResetStrategy, UserStatus
+from config import CORE_RUNTIME
 
 
 class Admin(Base):
@@ -140,15 +140,25 @@ class User(Base):
 
     @property
     def inbounds(self):
-        _ = {}
-        for proxy in self.proxies:
-            _[proxy.type] = []
-            excluded_tags = [i.tag for i in proxy.excluded_inbounds]
-            for inbound in xray.config.inbounds_by_protocol.get(proxy.type, []):
-                if inbound["tag"] not in excluded_tags:
-                    _[proxy.type].append(inbound["tag"])
+        if CORE_RUNTIME != "singbox":
+            from app import xray
 
-        return _
+            result = {}
+            for proxy in self.proxies:
+                result[proxy.type] = []
+                excluded_tags = [i.tag for i in proxy.excluded_inbounds]
+                for inbound in xray.config.inbounds_by_protocol.get(proxy.type, []):
+                    if inbound["tag"] not in excluded_tags:
+                        result[proxy.type].append(inbound["tag"])
+            return result
+
+        return {
+            proxy.type: [
+                inbound.tag
+                for inbound in proxy.excluded_inbounds
+            ]
+            for proxy in self.proxies
+        }
 
 
 excluded_inbounds_association = Table(

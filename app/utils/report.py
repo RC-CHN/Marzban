@@ -1,9 +1,8 @@
 from datetime import datetime as dt
 from typing import Optional
 
-from app import telegram
-from app.db import Session, create_notification_reminder, get_admin_by_id, GetDB
-from app.db.models import UserStatus, User
+from app.db import Session, create_notification_reminder
+from app.db.models import UserStatus
 from app.models.admin import Admin
 from app.models.user import ReminderType, UserResponse
 from app.utils.notification import (Notification, ReachedDaysLeft,
@@ -15,6 +14,7 @@ from app.utils.notification import (Notification, ReachedDaysLeft,
 from app import discord
 
 from config import (
+    CORE_RUNTIME,
     NOTIFY_STATUS_CHANGE,
     NOTIFY_USER_CREATED,
     NOTIFY_USER_UPDATED,
@@ -27,11 +27,19 @@ from config import (
 )
 
 
+def _call_telegram(func_name: str, *args, **kwargs) -> None:
+    if CORE_RUNTIME == "singbox":
+        return
+    from app import telegram
+
+    getattr(telegram, func_name)(*args, **kwargs)
+
+
 def status_change(
         username: str, status: UserStatus, user: UserResponse, user_admin: Admin = None, by: Admin = None) -> None:
     if NOTIFY_STATUS_CHANGE:
         try:
-            telegram.report_status_change(username, status, user_admin)
+            _call_telegram("report_status_change", username, status, user_admin)
         except Exception:
             pass
         if status == UserStatus.limited:
@@ -51,7 +59,8 @@ def status_change(
 def user_created(user: UserResponse, user_id: int, by: Admin, user_admin: Admin = None) -> None:
     if NOTIFY_USER_CREATED:
         try:
-            telegram.report_new_user(
+            _call_telegram(
+                "report_new_user",
                 user_id=user_id,
                 username=user.username,
                 by=by.username,
@@ -83,7 +92,8 @@ def user_created(user: UserResponse, user_id: int, by: Admin, user_admin: Admin 
 def user_updated(user: UserResponse, by: Admin, user_admin: Admin = None) -> None:
     if NOTIFY_USER_UPDATED:
         try:
-            telegram.report_user_modification(
+            _call_telegram(
+                "report_user_modification",
                 username=user.username,
                 expire_date=user.expire,
                 data_limit=user.data_limit,
@@ -114,7 +124,7 @@ def user_updated(user: UserResponse, by: Admin, user_admin: Admin = None) -> Non
 def user_deleted(username: str, by: Admin, user_admin: Admin = None) -> None:
     if NOTIFY_USER_DELETED:
         try:
-            telegram.report_user_deletion(username=username, by=by.username, admin=user_admin)
+            _call_telegram("report_user_deletion", username=username, by=by.username, admin=user_admin)
         except Exception:
             pass
         notify(UserDeleted(username=username, action=Notification.Type.user_deleted, by=by))
@@ -127,7 +137,8 @@ def user_deleted(username: str, by: Admin, user_admin: Admin = None) -> None:
 def user_data_usage_reset(user: UserResponse, by: Admin, user_admin: Admin = None) -> None:
     if NOTIFY_USER_DATA_USED_RESET:
         try:
-            telegram.report_user_usage_reset(
+            _call_telegram(
+                "report_user_usage_reset",
                 username=user.username,
                 by=by.username,
                 admin=user_admin
@@ -148,7 +159,8 @@ def user_data_usage_reset(user: UserResponse, by: Admin, user_admin: Admin = Non
 def user_data_reset_by_next(user: UserResponse, user_admin: Admin = None) -> None:
     if NOTIFY_USER_DATA_USED_RESET:
         try:
-            telegram.report_user_data_reset_by_next(
+            _call_telegram(
+                "report_user_data_reset_by_next",
                 user=user,
                 admin=user_admin
             )
@@ -167,7 +179,8 @@ def user_data_reset_by_next(user: UserResponse, user_admin: Admin = None) -> Non
 def user_subscription_revoked(user: UserResponse, by: Admin, user_admin: Admin = None) -> None:
     if NOTIFY_USER_SUB_REVOKED:
         try:
-            telegram.report_user_subscription_revoked(
+            _call_telegram(
+                "report_user_subscription_revoked",
                 username=user.username,
                 by=by.username,
                 admin=user_admin
@@ -205,7 +218,8 @@ def expire_days_reached(db: Session, days: int, user: UserResponse, user_id: int
 def login(username: str, password: str, client_ip: str, success: bool) -> None:
     if NOTIFY_LOGIN:
         try:
-            telegram.report_login(
+            _call_telegram(
+                "report_login",
                 username=username,
                 password=password,
                 client_ip=client_ip,

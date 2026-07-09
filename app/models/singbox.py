@@ -128,6 +128,14 @@ class SingBoxUserPolicyModify(BaseModel):
     exit_node_id: int | None = None
 
 
+class SingBoxUserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9-_@.]+$")
+    enabled_protocols: list[SingBoxProtocol] | None = None
+    exit_node_id: int | None = None
+    data_limit: int | None = Field(default=0, ge=0)
+    expire: int | None = 0
+
+
 class SingBoxUserPolicyResponse(BaseModel):
     username: str
     enabled_protocols: list[SingBoxProtocol]

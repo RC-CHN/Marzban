@@ -15,6 +15,7 @@ UVICORN_SSL_CERTFILE = config("UVICORN_SSL_CERTFILE", default=None)
 UVICORN_SSL_KEYFILE = config("UVICORN_SSL_KEYFILE", default=None)
 UVICORN_SSL_CA_TYPE = config("UVICORN_SSL_CA_TYPE", default="public").lower()
 DASHBOARD_PATH = config("DASHBOARD_PATH", default="/dashboard/")
+DASHBOARD_ENABLED = config("DASHBOARD_ENABLED", default=True, cast=bool)
 
 DEBUG = config("DEBUG", default=False, cast=bool)
 DOCS = config("DOCS", default=False, cast=bool)

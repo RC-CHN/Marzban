@@ -8,14 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
-from config import ALLOWED_ORIGINS, DOCS, XRAY_SUBSCRIPTION_PATH
+from config import ALLOWED_ORIGINS, CORE_RUNTIME, DASHBOARD_ENABLED, DOCS, XRAY_SUBSCRIPTION_PATH
 from app.utils.rate_limit import RateLimitMiddleware
 
 __version__ = "0.8.4"
 
 app = FastAPI(
     title="MarzbanAPI",
-    description="Unified GUI Censorship Resistant Solution Powered by Xray",
+    description="Unified GUI Censorship Resistant Solution Powered by sing-box",
     version=__version__,
     docs_url="/docs" if DOCS else None,
     redoc_url="/redoc" if DOCS else None,
@@ -34,7 +34,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RateLimitMiddleware)
-from app import dashboard, jobs, routers, telegram  # noqa
+if DASHBOARD_ENABLED:
+    from app import dashboard  # noqa
+from app import jobs, routers  # noqa
+if CORE_RUNTIME != "singbox":
+    from app import telegram  # noqa
 from app.routers import api_router  # noqa
 
 app.include_router(api_router)
@@ -53,7 +57,7 @@ use_route_names_as_operation_ids(app)
 def on_startup():
     paths = [f"{r.path}/" for r in app.routes]
     paths.append("/api/")
-    if f"/{XRAY_SUBSCRIPTION_PATH}/" in paths:
+    if CORE_RUNTIME != "singbox" and f"/{XRAY_SUBSCRIPTION_PATH}/" in paths:
         raise ValueError(
             f"you can't use /{XRAY_SUBSCRIPTION_PATH}/ as subscription path it reserved for {app.title}"
         )

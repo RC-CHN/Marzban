@@ -6,14 +6,20 @@ from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app import xray
 from app.models.admin import Admin
 from app.models.proxy import ProxySettings, ProxyTypes
-from app.subscription.share import generate_v2ray_links
 from app.utils.jwt import create_subscription_token
-from config import XRAY_SUBSCRIPTION_PATH, XRAY_SUBSCRIPTION_URL_PREFIX
+from config import CORE_RUNTIME, XRAY_SUBSCRIPTION_PATH, XRAY_SUBSCRIPTION_URL_PREFIX
 
 USERNAME_REGEXP = re.compile(r"^(?=\w{3,32}\b)[a-zA-Z0-9-_@.]+(?:_[a-zA-Z0-9-_@.]+)*$")
+
+
+def _xray_config():
+    if CORE_RUNTIME == "singbox":
+        return None
+    from app import xray
+
+    return xray.config
 
 
 class ReminderType(str, Enum):
@@ -154,10 +160,11 @@ class UserCreate(User):
     @property
     def excluded_inbounds(self):
         excluded = {}
+        xray_config = _xray_config()
         for proxy_type in self.proxies:
             excluded[proxy_type] = []
-            for inbound in xray.config.inbounds_by_protocol.get(proxy_type, []):
-                if not inbound["tag"] in self.inbounds.get(proxy_type, []):
+            for inbound in (xray_config.inbounds_by_protocol.get(proxy_type, []) if xray_config else []):
+                if inbound["tag"] not in self.inbounds.get(proxy_type, []):
                     excluded[proxy_type].append(inbound["tag"])
 
         return excluded
@@ -172,12 +179,13 @@ class UserCreate(User):
                 del inbounds[proxy_type]
 
         # check by proxies to ensure that every protocol has inbounds set
+        xray_config = _xray_config()
         for proxy_type in proxies:
             tags = inbounds.get(proxy_type)
 
             if tags:
                 for tag in tags:
-                    if tag not in xray.config.inbounds_by_tag:
+                    if xray_config and tag not in xray_config.inbounds_by_tag:
                         raise ValueError(f"Inbound {tag} doesn't exist")
 
             # elif isinstance(tags, list) and not tags:
@@ -186,7 +194,7 @@ class UserCreate(User):
             else:
                 inbounds[proxy_type] = [
                     i["tag"]
-                    for i in xray.config.inbounds_by_protocol.get(proxy_type, [])
+                    for i in (xray_config.inbounds_by_protocol.get(proxy_type, []) if xray_config else [])
                 ]
 
         return inbounds
@@ -235,10 +243,11 @@ class UserModify(User):
     @property
     def excluded_inbounds(self):
         excluded = {}
+        xray_config = _xray_config()
         for proxy_type in self.inbounds:
             excluded[proxy_type] = []
-            for inbound in xray.config.inbounds_by_protocol.get(proxy_type, []):
-                if not inbound["tag"] in self.inbounds.get(proxy_type, []):
+            for inbound in (xray_config.inbounds_by_protocol.get(proxy_type, []) if xray_config else []):
+                if inbound["tag"] not in self.inbounds.get(proxy_type, []):
                     excluded[proxy_type].append(inbound["tag"])
 
         return excluded
@@ -248,13 +257,14 @@ class UserModify(User):
         # check with inbounds, "proxies" is optional on modifying
         # so inbounds particularly can be modified
         if inbounds:
+            xray_config = _xray_config()
             for proxy_type, tags in inbounds.items():
 
                 # if not tags:
                 #     raise ValueError(f"{proxy_type} inbounds cannot be empty")
 
                 for tag in tags:
-                    if tag not in xray.config.inbounds_by_tag:
+                    if xray_config and tag not in xray_config.inbounds_by_tag:
                         raise ValueError(f"Inbound {tag} doesn't exist")
 
         return inbounds
@@ -295,7 +305,9 @@ class UserResponse(User):
 
     @model_validator(mode="after")
     def validate_links(self):
-        if not self.links:
+        if not self.links and CORE_RUNTIME != "singbox":
+            from app.subscription.share import generate_v2ray_links
+
             self.links = generate_v2ray_links(
                 self.proxies, self.inbounds, extra_data=self.model_dump(), reverse=False,
             )
