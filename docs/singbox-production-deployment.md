@@ -98,7 +98,7 @@ client -> node-a -> node-b -> node-c -> internet
 - 性能和穿透表现适合节点间转发。
 - 内部链路协议统一后，配置、排障和轮换密钥更简单。
 
-节点间 TLS 建议使用主控制面板维护的内部 CA：
+节点间 TLS 默认使用主控制面板维护的自签内部 CA：
 
 - 控制面生成并保存内部 root CA 或 intermediate CA。
 - 每个节点拿到自己的节点证书、节点私钥和内部 CA 证书。
@@ -264,7 +264,7 @@ SINGBOX_TLS_KEY_PATH=/etc/sing-box/certs/privkey.pem
 
 ## 控制面内部 CA
 
-节点间链路建议由主控制面板节点维护一个内部 CA。
+节点间链路默认由主控制面板节点维护一个自签内部 CA。
 
 参考 sing-box TLS 配置文档：
 
