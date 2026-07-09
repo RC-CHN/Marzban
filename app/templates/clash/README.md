@@ -41,7 +41,7 @@ Make sure you put all of your templates in this folder.\
 If you are using Docker, make sure Docker has access to this folder.\
 Then, we need to make a directory for our Clash template.
 ```shell
-mkdir /var/lib/marzban/templates/v2ray
+mkdir /var/lib/marzban/templates/clash
 ```
 After that, put your templates (config and settings) in the directory.\
 Now, change these variables with your files' names.
@@ -56,4 +56,4 @@ If you have already changed your env variables, and you want to just update the 
 ## Docs
 you can use these docs to find out how to modify template files
 
-[Mihomo Docs](https://wiki.metacubex.one/en/) 
+[Mihomo Docs](https://wiki.metacubex.one/en/)

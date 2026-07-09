@@ -29,7 +29,6 @@ from app.models.proxy import (
     ProxyTypes,
 )
 from app.models.user import ReminderType, UserDataLimitResetStrategy, UserStatus
-from config import CORE_RUNTIME
 
 
 class Admin(Base):
@@ -140,18 +139,6 @@ class User(Base):
 
     @property
     def inbounds(self):
-        if CORE_RUNTIME != "singbox":
-            from app import xray
-
-            result = {}
-            for proxy in self.proxies:
-                result[proxy.type] = []
-                excluded_tags = [i.tag for i in proxy.excluded_inbounds]
-                for inbound in xray.config.inbounds_by_protocol.get(proxy.type, []):
-                    if inbound["tag"] not in excluded_tags:
-                        result[proxy.type].append(inbound["tag"])
-            return result
-
         return {
             proxy.type: [
                 inbound.tag
@@ -315,7 +302,7 @@ class Node(Base):
     address = Column(String(256), unique=False, nullable=False)
     port = Column(Integer, unique=False, nullable=False)
     api_port = Column(Integer, unique=False, nullable=False)
-    xray_version = Column(String(32), nullable=True)
+    core_version = Column(String(32), nullable=True)
     status = Column(Enum(NodeStatus), nullable=False, default=NodeStatus.connecting)
     last_status_change = Column(DateTime, default=datetime.utcnow)
     message = Column(String(1024), nullable=True)

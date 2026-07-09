@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
-from config import ALLOWED_ORIGINS, CORE_RUNTIME, DASHBOARD_ENABLED, DOCS, XRAY_SUBSCRIPTION_PATH
+from config import ALLOWED_ORIGINS, DASHBOARD_ENABLED, DOCS
 from app.utils.rate_limit import RateLimitMiddleware
 
 __version__ = "0.8.4"
@@ -37,8 +37,6 @@ app.add_middleware(RateLimitMiddleware)
 if DASHBOARD_ENABLED:
     from app import dashboard  # noqa
 from app import jobs, routers  # noqa
-if CORE_RUNTIME != "singbox":
-    from app import telegram  # noqa
 from app.routers import api_router  # noqa
 
 app.include_router(api_router)
@@ -55,12 +53,6 @@ use_route_names_as_operation_ids(app)
 
 @app.on_event("startup")
 def on_startup():
-    paths = [f"{r.path}/" for r in app.routes]
-    paths.append("/api/")
-    if CORE_RUNTIME != "singbox" and f"/{XRAY_SUBSCRIPTION_PATH}/" in paths:
-        raise ValueError(
-            f"you can't use /{XRAY_SUBSCRIPTION_PATH}/ as subscription path it reserved for {app.title}"
-        )
     scheduler.start()
 
 

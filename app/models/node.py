@@ -59,7 +59,7 @@ class NodeModify(Node):
 
 class NodeResponse(Node):
     id: int
-    xray_version: Optional[str] = None
+    core_version: Optional[str] = None
     status: NodeStatus
     message: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)

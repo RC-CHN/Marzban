@@ -1,10 +1,11 @@
 import requests
 from datetime import datetime
+from html import escape as escape_html
+
 from app.db.models import User
 from app.utils.system import readable_size
 from app.models.user import UserDataLimitResetStrategy
 from app.models.admin import Admin
-from telebot.formatting import escape_html
 from app import logger
 from config import DISCORD_WEBHOOK_URL
 
@@ -95,8 +96,6 @@ def report_user_modification(username: str, expire_date: int, data_limit: int, p
     data_limit=readable_size(data_limit) if data_limit else "Unlimited"
     expire_date=datetime.fromtimestamp(expire_date).strftime("%H:%M:%S %Y-%m-%d") if expire_date else "Never"
     proxies="" if not proxies else ", ".join([escape_html(proxy) for proxy in proxies])
-    protocols = proxies
-
     reportUserModification = {
         'content': '',
         'embeds':  [

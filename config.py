@@ -26,17 +26,7 @@ VITE_BASE_API = f"http://127.0.0.1:{UVICORN_PORT}/api/" \
     if DEBUG and config("VITE_BASE_API", default="/api/") == "/api/" \
     else config("VITE_BASE_API", default="/api/")
 
-XRAY_JSON = config("XRAY_JSON", default="./xray_config.json")
-XRAY_FALLBACKS_INBOUND_TAG = config("XRAY_FALLBACKS_INBOUND_TAG", cast=str, default="") or config(
-    "XRAY_FALLBACK_INBOUND_TAG", cast=str, default=""
-)
-XRAY_EXECUTABLE_PATH = config("XRAY_EXECUTABLE_PATH", default="/usr/local/bin/xray")
-XRAY_ASSETS_PATH = config("XRAY_ASSETS_PATH", default="/usr/local/share/xray")
-XRAY_EXCLUDE_INBOUND_TAGS = config("XRAY_EXCLUDE_INBOUND_TAGS", default='').split()
-XRAY_SUBSCRIPTION_URL_PREFIX = config("XRAY_SUBSCRIPTION_URL_PREFIX", default="").strip("/")
-XRAY_SUBSCRIPTION_PATH = config("XRAY_SUBSCRIPTION_PATH", default="sub").strip("/")
-
-CORE_RUNTIME = config("CORE_RUNTIME", default="xray").lower()
+CORE_RUNTIME = "singbox"
 SINGBOX_EXECUTABLE_PATH = config("SINGBOX_EXECUTABLE_PATH", default="/usr/local/bin/sing-box")
 SINGBOX_CONFIG_DIR = config("SINGBOX_CONFIG_DIR", default="/var/lib/marzban/singbox/configs")
 SINGBOX_WORK_DIR = config("SINGBOX_WORK_DIR", default="/var/lib/sing-box")
@@ -67,16 +57,6 @@ SINGBOX_SHADOWSOCKS_SERVER_PASSWORD = config(
     default="MDEyMzQ1Njc4OWFiY2RlZg==",
 )
 
-TELEGRAM_API_TOKEN = config("TELEGRAM_API_TOKEN", default="")
-TELEGRAM_ADMIN_ID = config(
-    'TELEGRAM_ADMIN_ID',
-    default="",
-    cast=lambda v: [int(i) for i in filter(str.isdigit, (s.strip() for s in v.split(',')))]
-)
-TELEGRAM_PROXY_URL = config("TELEGRAM_PROXY_URL", default="")
-TELEGRAM_LOGGER_CHANNEL_ID = config("TELEGRAM_LOGGER_CHANNEL_ID", cast=int, default=0)
-TELEGRAM_DEFAULT_VLESS_FLOW = config("TELEGRAM_DEFAULT_VLESS_FLOW", default="")
-
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = config("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", cast=int, default=1440)
 
 CUSTOM_TEMPLATES_DIRECTORY = config("CUSTOM_TEMPLATES_DIRECTORY", default=None)
@@ -88,11 +68,6 @@ CLASH_SETTINGS_TEMPLATE = config("CLASH_SETTINGS_TEMPLATE", default="clash/setti
 
 SINGBOX_SUBSCRIPTION_TEMPLATE = config("SINGBOX_SUBSCRIPTION_TEMPLATE", default="singbox/default.json")
 SINGBOX_SETTINGS_TEMPLATE = config("SINGBOX_SETTINGS_TEMPLATE", default="singbox/settings.json")
-
-MUX_TEMPLATE = config("MUX_TEMPLATE", default="mux/default.json")
-
-V2RAY_SUBSCRIPTION_TEMPLATE = config("V2RAY_SUBSCRIPTION_TEMPLATE", default="v2ray/default.json")
-V2RAY_SETTINGS_TEMPLATE = config("V2RAY_SETTINGS_TEMPLATE", default="v2ray/settings.json")
 
 USER_AGENT_TEMPLATE = config("USER_AGENT_TEMPLATE", default="user_agent/default.json")
 GRPC_USER_AGENT_TEMPLATE = config("GRPC_USER_AGENT_TEMPLATE", default="user_agent/grpc.json")
@@ -115,8 +90,6 @@ LOGIN_BACKOFF_MAX_SECONDS = config("LOGIN_BACKOFF_MAX_SECONDS", default=300, cas
 LOGIN_BACKOFF_RESET_SECONDS = config("LOGIN_BACKOFF_RESET_SECONDS", default=900, cast=int)
 
 USE_CUSTOM_JSON_DEFAULT = config("USE_CUSTOM_JSON_DEFAULT", default=False, cast=bool)
-USE_CUSTOM_JSON_FOR_V2RAYN = config("USE_CUSTOM_JSON_FOR_V2RAYN", default=False, cast=bool)
-USE_CUSTOM_JSON_FOR_V2RAYNG = config("USE_CUSTOM_JSON_FOR_V2RAYNG", default=False, cast=bool)
 USE_CUSTOM_JSON_FOR_STREISAND = config("USE_CUSTOM_JSON_FOR_STREISAND", default=False, cast=bool)
 USE_CUSTOM_JSON_FOR_HAPP = config("USE_CUSTOM_JSON_FOR_HAPP", default=False, cast=bool)
 

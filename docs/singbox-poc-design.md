@@ -80,14 +80,11 @@ app/core/
     node.py            # 后续远端节点控制适配
 ```
 
-POC 阶段可以先不删除 `app/xray/`，而是让新代码并行存在：
-
-- `XRAY_*` 配置保留。
-- 新增 `SINGBOX_*` 配置。
-- 通过环境变量选择 runtime：
+当前实现已经切换为 sing-box only，不再保留 `app/xray/`、`xray_api/`
+和旧运行时配置。生产和测试统一使用项目自带的 sing-box
+二进制；`CORE_RUNTIME` 固定为 `singbox`，只保留 sing-box 相关路径：
 
 ```env
-CORE_RUNTIME=singbox
 SINGBOX_EXECUTABLE_PATH=/usr/local/bin/sing-box
 SINGBOX_CONFIG_PATH=/var/lib/marzban/singbox/config.json
 SINGBOX_WORK_DIR=/var/lib/sing-box

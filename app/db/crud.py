@@ -1357,7 +1357,7 @@ def update_node(db: Session, dbnode: Node, modify: NodeModify) -> Node:
 
     if modify.status is NodeStatus.disabled:
         dbnode.status = modify.status
-        dbnode.xray_version = None
+        dbnode.core_version = None
         dbnode.message = None
     else:
         dbnode.status = NodeStatus.connecting
@@ -1386,7 +1386,7 @@ def update_node_status(db: Session, dbnode: Node, status: NodeStatus, message: s
     """
     dbnode.status = status
     dbnode.message = message
-    dbnode.xray_version = version
+    dbnode.core_version = version
     dbnode.last_status_change = datetime.utcnow()
     db.commit()
     db.refresh(dbnode)

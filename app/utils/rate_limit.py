@@ -24,7 +24,6 @@ from config import (
     RATE_LIMIT_TRUST_PROXY_HEADERS,
     SUBSCRIPTION_RATE_LIMIT_REQUESTS,
     SUBSCRIPTION_RATE_LIMIT_WINDOW_SECONDS,
-    XRAY_SUBSCRIPTION_PATH,
 )
 
 
@@ -167,7 +166,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 def _rule_for(request: Request) -> tuple[str, int, int] | None:
     path = request.url.path.rstrip("/") or "/"
-    subscription_prefix = f"/{XRAY_SUBSCRIPTION_PATH.strip('/')}"
+    subscription_prefix = "/api/singbox/subscription"
     if path == "/api/admin/token":
         return "login", LOGIN_RATE_LIMIT_REQUESTS, LOGIN_RATE_LIMIT_WINDOW_SECONDS
     if path in {"/api/singbox/bootstrap.sh", "/api/singbox/nodes/enroll"}:

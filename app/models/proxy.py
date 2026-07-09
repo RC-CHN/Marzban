@@ -7,19 +7,46 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.utils.system import random_password
-from xray_api.types.account import (
-    ShadowsocksAccount,
-    ShadowsocksMethods,
-    TrojanAccount,
-    VLESSAccount,
-    VMessAccount,
-    XTLSFlows,
-)
 
 FRAGMENT_PATTERN = re.compile(r'^((\d{1,4}-\d{1,4})|(\d{1,4})),((\d{1,3}-\d{1,3})|(\d{1,3})),(tlshello|\d|\d\-\d)$')
 
 NOISE_PATTERN = re.compile(
     r'^(rand:(\d{1,4}-\d{1,4}|\d{1,4})|str:.+|hex:.+|base64:.+)(,(\d{1,4}-\d{1,4}|\d{1,4}))?(&(rand:(\d{1,4}-\d{1,4}|\d{1,4})|str:.+|hex:.+|base64:.+)(,(\d{1,4}-\d{1,4}|\d{1,4}))?)*$')
+
+
+class XTLSFlows(str, Enum):
+    NONE = ""
+    VISION = "xtls-rprx-vision"
+
+
+class ShadowsocksMethods(str, Enum):
+    AES_128_GCM = "aes-128-gcm"
+    AES_256_GCM = "aes-256-gcm"
+    CHACHA20_POLY1305 = "chacha20-ietf-poly1305"
+
+
+class _LegacyAccount(BaseModel):
+    email: str
+    level: int = 0
+
+
+class VMessAccount(_LegacyAccount):
+    id: UUID
+
+
+class VLESSAccount(_LegacyAccount):
+    id: UUID
+    flow: XTLSFlows = XTLSFlows.NONE
+
+
+class TrojanAccount(_LegacyAccount):
+    password: str
+    flow: XTLSFlows = XTLSFlows.NONE
+
+
+class ShadowsocksAccount(_LegacyAccount):
+    password: str
+    method: ShadowsocksMethods = ShadowsocksMethods.CHACHA20_POLY1305
 
 
 class ProxyTypes(str, Enum):
@@ -161,7 +188,7 @@ class ProxyHost(BaseModel):
     def validate_remark(cls, v):
         try:
             v.format_map(FormatVariables())
-        except ValueError as exc:
+        except ValueError:
             raise ValueError("Invalid formatting variables")
 
         return v
@@ -170,7 +197,7 @@ class ProxyHost(BaseModel):
     def validate_address(cls, v):
         try:
             v.format_map(FormatVariables())
-        except ValueError as exc:
+        except ValueError:
             raise ValueError("Invalid formatting variables")
 
         return v

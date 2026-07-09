@@ -14,7 +14,6 @@ from app.utils.notification import (Notification, ReachedDaysLeft,
 from app import discord
 
 from config import (
-    CORE_RUNTIME,
     NOTIFY_STATUS_CHANGE,
     NOTIFY_USER_CREATED,
     NOTIFY_USER_UPDATED,
@@ -28,11 +27,7 @@ from config import (
 
 
 def _call_telegram(func_name: str, *args, **kwargs) -> None:
-    if CORE_RUNTIME == "singbox":
-        return
-    from app import telegram
-
-    getattr(telegram, func_name)(*args, **kwargs)
+    return
 
 
 def status_change(

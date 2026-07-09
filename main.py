@@ -54,7 +54,7 @@ Self-signed CAs are useful in testing or internal use cases, they’re not suita
 
 if __name__ == "__main__":
     # Do NOT change workers count for now
-    # multi-workers support isn't implemented yet for APScheduler and XRay module
+    # multi-workers support isn't implemented yet for APScheduler jobs
 
     bind_args = {}
     if UVICORN_SSL_CA_TYPE not in ["public", "private"]:

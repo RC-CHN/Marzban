@@ -3,15 +3,6 @@ from typing import Dict, List, Optional
 from pydantic import field_validator, ConfigDict, BaseModel, Field
 
 from app.models.proxy import ProxyTypes
-from config import CORE_RUNTIME
-
-
-def _xray_config():
-    if CORE_RUNTIME == "singbox":
-        return None
-    from app import xray
-
-    return xray.config
 
 
 class UserTemplate(BaseModel):
@@ -60,17 +51,5 @@ class UserTemplateResponse(UserTemplate):
     @field_validator("inbounds", mode="before")
     @classmethod
     def validate_inbounds(cls, v):
-        xray_config = _xray_config()
-        if xray_config is None:
-            return {}
-        final = {}
-        inbound_tags = [i.tag for i in v]
-        for protocol, inbounds in xray_config.inbounds_by_protocol.items():
-            for inbound in inbounds:
-                if inbound["tag"] in inbound_tags:
-                    if protocol in final:
-                        final[protocol].append(inbound["tag"])
-                    else:
-                        final[protocol] = [inbound["tag"]]
-        return final
+        return {}
     model_config = ConfigDict(from_attributes=True)
