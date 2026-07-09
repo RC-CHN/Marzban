@@ -13,17 +13,11 @@ import {
 import {
   ArrowLeftOnRectangleIcon,
   Bars3Icon,
-  ChartPieIcon,
-  Cog6ToothIcon,
   CurrencyDollarIcon,
-  DocumentMinusIcon,
-  LinkIcon,
   MoonIcon,
-  SquaresPlusIcon,
   SunIcon,
 } from "@heroicons/react/24/outline";
 import { DONATION_URL, REPO_URL } from "constants/Project";
-import { useDashboard } from "contexts/DashboardContext";
 import differenceInDays from "date-fns/differenceInDays";
 import isValid from "date-fns/isValid";
 import { FC, ReactNode, useState } from "react";
@@ -46,14 +40,9 @@ const iconProps = {
 
 const DarkIcon = chakra(MoonIcon, iconProps);
 const LightIcon = chakra(SunIcon, iconProps);
-const CoreSettingsIcon = chakra(Cog6ToothIcon, iconProps);
 const SettingsIcon = chakra(Bars3Icon, iconProps);
 const LogoutIcon = chakra(ArrowLeftOnRectangleIcon, iconProps);
 const DonationIcon = chakra(CurrencyDollarIcon, iconProps);
-const HostsIcon = chakra(LinkIcon, iconProps);
-const NodesIcon = chakra(SquaresPlusIcon, iconProps);
-const NodesUsageIcon = chakra(ChartPieIcon, iconProps);
-const ResetUsageIcon = chakra(DocumentMinusIcon, iconProps);
 const NotificationCircle = chakra(Box, {
   baseStyle: {
     bg: "yellow.500",
@@ -91,12 +80,6 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
     return false;
   };
 
-  const {
-    onEditingHosts,
-    onResetAllUsage,
-    onEditingNodes,
-    onShowingNodesUsage,
-  } = useDashboard();
   const { t } = useTranslation();
   const { colorMode, toggleColorMode } = useColorMode();
   const [showDonationNotif, setShowDonationNotif] = useState(
@@ -121,7 +104,7 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
       position="relative"
     >
       <Text as="h1" fontWeight="semibold" fontSize="2xl">
-        {t("users")}
+        sing-box
       </Text>
       {showDonationNotif && (
         <NotificationCircle top="0" right="0" zIndex={9999} />
@@ -141,42 +124,6 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
               position="relative"
             ></MenuButton>
             <MenuList minW="170px" zIndex={99999} className="menuList">
-              {isSudo() && (
-                <>
-                  <MenuItem
-                    maxW="170px"
-                    fontSize="sm"
-                    icon={<HostsIcon />}
-                    onClick={onEditingHosts.bind(null, true)}
-                  >
-                    {t("header.hostSettings")}
-                  </MenuItem>
-                  <MenuItem
-                    maxW="170px"
-                    fontSize="sm"
-                    icon={<NodesIcon />}
-                    onClick={onEditingNodes.bind(null, true)}
-                  >
-                    {t("header.nodeSettings")}
-                  </MenuItem>
-                  <MenuItem
-                    maxW="170px"
-                    fontSize="sm"
-                    icon={<NodesUsageIcon />}
-                    onClick={onShowingNodesUsage.bind(null, true)}
-                  >
-                    {t("header.nodesUsage")}
-                  </MenuItem>
-                  <MenuItem
-                    maxW="170px"
-                    fontSize="sm"
-                    icon={<ResetUsageIcon />}
-                    onClick={onResetAllUsage.bind(null, true)}
-                  >
-                    {t("resetAllUsage")}
-                  </MenuItem>
-                </>
-              )}
               <Link to={DONATION_URL} target="_blank">
                 <MenuItem
                   maxW="170px"
@@ -199,18 +146,7 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
             </MenuList>
           </Menu>
 
-          {isSudo() && (
-            <IconButton
-              size="sm"
-              variant="outline"
-              aria-label="core settings"
-              onClick={() => {
-                useDashboard.setState({ isEditingCore: true });
-              }}
-            >
-              <CoreSettingsIcon />
-            </IconButton>
-          )}
+          {isSudo() && actions}
 
           <Language />
 

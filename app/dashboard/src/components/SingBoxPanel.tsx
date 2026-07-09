@@ -129,6 +129,10 @@ export const SingBoxPanel: FC = () => {
   const [policyExitNodeId, setPolicyExitNodeId] = useState("");
   const [policyProtocols, setPolicyProtocols] = useState(Protocols);
   const [enrollmentCommand, setEnrollmentCommand] = useState("");
+  const [subscriptionLinks, setSubscriptionLinks] = useState<{
+    singbox: string;
+    clash: string;
+  } | null>(null);
 
   const nodesQuery = useQuery({
     queryKey: [QueryKey, "nodes"],
@@ -245,15 +249,21 @@ export const SingBoxPanel: FC = () => {
 
   const savePolicy = useMutation(
     () =>
-      fetch(`/singbox/users/${policyUsername}/policy`, {
-        method: "PUT",
+      fetch(`/singbox/users`, {
+        method: "POST",
         body: {
+          username: policyUsername,
           exit_node_id: policyExitNodeId ? Number(policyExitNodeId) : null,
           enabled_protocols: policyProtocols,
         },
       }),
     {
       onSuccess: () => {
+        const base = `${window.location.origin}/api/singbox/subscription/${policyUsername}`;
+        setSubscriptionLinks({
+          singbox: `${base}/sing-box`,
+          clash: `${base}/clash`,
+        });
         generateSuccessMessage("sing-box user policy saved", toast);
       },
       onError: (e) => {
@@ -559,9 +569,22 @@ export const SingBoxPanel: FC = () => {
                     }}
                   >
                     {protocol}
-                  </Checkbox>
-                ))}
+                </Checkbox>
+              ))}
               </Grid>
+              {subscriptionLinks && (
+                <>
+                  <Divider />
+                  <FormControl>
+                    <FormLabel fontSize="xs">sing-box subscription</FormLabel>
+                    <Input size="sm" value={subscriptionLinks.singbox} isReadOnly />
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel fontSize="xs">Clash subscription</FormLabel>
+                    <Input size="sm" value={subscriptionLinks.clash} isReadOnly />
+                  </FormControl>
+                </>
+              )}
             </VStack>
           </GridItem>
         </Grid>

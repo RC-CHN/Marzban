@@ -159,7 +159,7 @@ const NodeAccordion: FC<AccordionInboundType> = ({ toggleAccordion, node }) => {
             {node.name}
           </Text>
           <HStack>
-            {node.xray_version && (
+            {node.core_version && (
               <Badge
                 colorScheme="blue"
                 rounded="full"
@@ -173,7 +173,7 @@ const NodeAccordion: FC<AccordionInboundType> = ({ toggleAccordion, node }) => {
                   fontWeight="medium"
                   letterSpacing="tighter"
                 >
-                  Xray {node.xray_version}
+                  sing-box {node.core_version}
                 </Text>
               </Badge>
             )}

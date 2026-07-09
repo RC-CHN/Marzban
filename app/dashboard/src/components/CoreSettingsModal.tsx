@@ -246,7 +246,7 @@ const CoreSettingModalContent: FC = () => {
               {isLoading && <CircularProgress isIndeterminate size="15px" />}
             </FormLabel>
             <HStack gap={0}>
-              <Tooltip label="Xray Version" placement="top">
+              <Tooltip label="Core Version" placement="top">
                 <Badge height="100%" textTransform="lowercase">
                   {version && `v${version}`}
                 </Badge>
