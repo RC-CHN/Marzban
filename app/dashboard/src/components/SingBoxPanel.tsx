@@ -60,6 +60,19 @@ type SingBoxLink = {
   mtls_enabled: boolean;
 };
 
+type SingBoxStatus = {
+  public_tls: {
+    mode: "ip-ca" | "ip-insecure" | "system-ca";
+    insecure: boolean;
+    ca_configured: boolean;
+  };
+  node_link_tls: {
+    mode: "internal-ca";
+    address_mode: "ip-or-domain";
+    mtls: boolean;
+  };
+};
+
 const QueryKey = "singbox-panel";
 const Protocols = [
   "hysteria2",
@@ -94,10 +107,16 @@ export const SingBoxPanel: FC = () => {
     queryFn: () => fetch<SingBoxLink[]>("/singbox/links"),
     refetchOnWindowFocus: false,
   });
+  const statusQuery = useQuery({
+    queryKey: [QueryKey, "status"],
+    queryFn: () => fetch<SingBoxStatus>("/singbox/status"),
+    refetchOnWindowFocus: false,
+  });
 
   const invalidate = () => {
     queryClient.invalidateQueries([QueryKey, "nodes"]);
     queryClient.invalidateQueries([QueryKey, "links"]);
+    queryClient.invalidateQueries([QueryKey, "status"]);
   };
 
   const addNode = useMutation(
@@ -191,6 +210,14 @@ export const SingBoxPanel: FC = () => {
 
   const nodes = nodesQuery.data || [];
   const links = linksQuery.data || [];
+  const status = statusQuery.data;
+  const publicTlsMode = status?.public_tls.mode;
+  const publicTlsLabel =
+    publicTlsMode === "ip-ca"
+      ? "entry IP CA"
+      : publicTlsMode === "ip-insecure"
+      ? "entry insecure"
+      : "entry system CA";
 
   return (
     <Box
@@ -209,6 +236,16 @@ export const SingBoxPanel: FC = () => {
               sing-box
             </Text>
             <Badge colorScheme="purple">runtime</Badge>
+            {status && (
+              <>
+                <Badge colorScheme={status.public_tls.insecure ? "orange" : "green"}>
+                  {publicTlsLabel}
+                </Badge>
+                <Badge colorScheme={status.node_link_tls.mtls ? "green" : "blue"}>
+                  {status.node_link_tls.mtls ? "link mTLS" : "link CA"}
+                </Badge>
+              </>
+            )}
             <Badge colorScheme="blue">
               <HStack spacing={1}>
                 <Icon as={LinkIcon} />
@@ -322,7 +359,12 @@ export const SingBoxPanel: FC = () => {
                 </FormControl>
                 <FormControl>
                   <FormLabel fontSize="xs">Address</FormLabel>
-                  <Input size="sm" value={nodeHost} onChange={(e) => setNodeHost(e.target.value)} />
+                  <Input
+                    size="sm"
+                    placeholder="IP or DNS"
+                    value={nodeHost}
+                    onChange={(e) => setNodeHost(e.target.value)}
+                  />
                 </FormControl>
                 <Button
                   size="sm"
