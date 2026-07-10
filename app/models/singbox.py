@@ -205,10 +205,18 @@ class SingBoxNodeSyncRequest(BaseModel):
     node_name: str | None = None
     current_config_hash: str | None = None
     sing_box_version: str | None = Field(default=None, max_length=64)
+    sync_agent_version: str | None = Field(default=None, max_length=64)
     runtime: str | None = Field(default=None, max_length=64)
     container_image: str | None = Field(default=None, max_length=256)
     node_link_listening: bool | None = None
     message: str | None = Field(default=None, max_length=512)
+
+
+class SingBoxNodeUpgradeInstruction(BaseModel):
+    apply: bool = True
+    image: str | None = None
+    agent_version: str | None = None
+    agent_url: str | None = None
 
 
 class SingBoxNodeSyncResponse(BaseModel):
@@ -218,6 +226,7 @@ class SingBoxNodeSyncResponse(BaseModel):
     changed: bool
     sync_interval_seconds: int = 60
     config: dict | None = None
+    upgrade: SingBoxNodeUpgradeInstruction | None = None
 
 
 class SingBoxNodeSyncAppliedRequest(BaseModel):
@@ -225,6 +234,7 @@ class SingBoxNodeSyncAppliedRequest(BaseModel):
     config_hash: str = Field(min_length=64, max_length=64)
     success: bool = True
     sing_box_version: str | None = Field(default=None, max_length=64)
+    sync_agent_version: str | None = Field(default=None, max_length=64)
     runtime: str | None = Field(default=None, max_length=64)
     container_image: str | None = Field(default=None, max_length=256)
     message: str | None = Field(default=None, max_length=512)

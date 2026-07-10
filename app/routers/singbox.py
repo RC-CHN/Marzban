@@ -52,8 +52,11 @@ from app.models.node import NodeStatus
 from app.utils import responses
 from config import (
     SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY,
+    SINGBOX_NODE_AUTO_UPGRADE,
+    SINGBOX_NODE_TARGET_IMAGE,
     SINGBOX_NODE_LINK_MTLS,
     SINGBOX_NODE_LINK_PROTOCOL,
+    SINGBOX_SYNC_AGENT_VERSION,
 )
 
 router = APIRouter(
@@ -77,6 +80,19 @@ def _public_subscription_links(token: str) -> SingBoxSubscriptionLinks:
         clash=f"{base}/clash",
         v2rayn=f"{base}/v2rayn",
     )
+
+
+def _sync_agent_script_text() -> str:
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "singbox-bootstrap.sh"
+    lines = script_path.read_text().splitlines()
+    marker = "cat >\"$tmp_path\" <<'SYNC_AGENT'\n"
+    source = "\n".join(lines) + "\n"
+    start = source.index(marker) + len(marker)
+    script_lines = source[start:].splitlines()
+    for index, line in enumerate(script_lines):
+        if line == "SYNC_AGENT":
+            return "\n".join(script_lines[:index]).rstrip() + "\n"
+    raise RuntimeError("SYNC_AGENT heredoc terminator not found")
 
 
 def _user_policy_response(user: User, credential) -> SingBoxUserPolicyResponse:
@@ -122,6 +138,11 @@ def get_bootstrap_script():
     return script_path.read_text()
 
 
+@router.get("/sync-agent.sh", response_class=PlainTextResponse, include_in_schema=False)
+def get_sync_agent_script():
+    return _sync_agent_script_text()
+
+
 @router.get("/status")
 def get_status(
     db: Session = Depends(get_db),
@@ -143,6 +164,11 @@ def get_status(
             "protocol": SINGBOX_NODE_LINK_PROTOCOL,
             "address_mode": "ip-or-domain",
             "mtls": SINGBOX_NODE_LINK_MTLS,
+        },
+        "node_upgrade": {
+            "enabled": SINGBOX_NODE_AUTO_UPGRADE,
+            "target_image": SINGBOX_NODE_TARGET_IMAGE or None,
+            "sync_agent_version": SINGBOX_SYNC_AGENT_VERSION,
         },
         "nodes": [
             {
@@ -257,6 +283,7 @@ def enroll_node(
 @router.post("/nodes/sync", response_model=SingBoxNodeSyncResponse, responses={403: responses._403})
 def sync_node_config(
     payload: SingBoxNodeSyncRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     node = production.get_node_by_sync_token(db, payload.token)
@@ -278,6 +305,13 @@ def sync_node_config(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     changed = payload.current_config_hash != hash_value
+    agent_url = f"{str(request.base_url).rstrip('/')}/api/singbox/sync-agent.sh"
+    upgrade = production.build_node_upgrade_instruction(
+        runtime=payload.runtime,
+        container_image=payload.container_image,
+        sync_agent_version=payload.sync_agent_version,
+        agent_url=agent_url,
+    )
     production.update_node_heartbeat(
         db,
         node,
@@ -293,6 +327,7 @@ def sync_node_config(
         config_hash=hash_value,
         changed=changed,
         config=config if changed else None,
+        upgrade=upgrade,
     )
 
 

@@ -45,8 +45,11 @@ from config import (
     SINGBOX_NODE_LINK_MTLS,
     SINGBOX_NODE_LINK_PROTOCOL,
     SINGBOX_NODE_LINK_PORT,
+    SINGBOX_NODE_AUTO_UPGRADE,
+    SINGBOX_NODE_TARGET_IMAGE,
     SINGBOX_SHADOWSOCKS_METHOD,
     SINGBOX_SHADOWSOCKS_SERVER_PASSWORD,
+    SINGBOX_SYNC_AGENT_VERSION,
     SINGBOX_PUBLIC_TLS_CA_CERT_PATH,
     SINGBOX_TLS_CERT_PATH,
     SINGBOX_TLS_INSECURE,
@@ -381,6 +384,38 @@ def build_user_subscription(
     if config_format in {"v2rayn", "v2ray"}:
         return build_v2rayn_subscription(builder, entry_node.name, singbox_user, protocols)
     return build_singbox_subscription(builder, entry_node.name, singbox_user, protocols)
+
+
+def build_node_upgrade_instruction(
+    *,
+    runtime: str | None,
+    container_image: str | None,
+    sync_agent_version: str | None,
+    agent_url: str,
+) -> dict | None:
+    if not SINGBOX_NODE_AUTO_UPGRADE:
+        return None
+
+    instruction: dict[str, str | bool | None] = {
+        "apply": True,
+        "image": None,
+        "agent_version": None,
+        "agent_url": None,
+    }
+    if (
+        SINGBOX_NODE_TARGET_IMAGE
+        and (runtime or "").lower() == "docker"
+        and container_image != SINGBOX_NODE_TARGET_IMAGE
+    ):
+        instruction["image"] = SINGBOX_NODE_TARGET_IMAGE
+
+    if SINGBOX_SYNC_AGENT_VERSION and sync_agent_version != SINGBOX_SYNC_AGENT_VERSION:
+        instruction["agent_version"] = SINGBOX_SYNC_AGENT_VERSION
+        instruction["agent_url"] = agent_url
+
+    if instruction["image"] or instruction["agent_version"]:
+        return instruction
+    return None
 
 
 def update_node_config_hash(db: Session, node: DBSingBoxNode, hash_value: str, applied: bool = False) -> None:

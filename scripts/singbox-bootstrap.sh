@@ -22,6 +22,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/marzban-singbox}"
 SYNC_ENV_PATH="${SYNC_ENV_PATH:-/etc/marzban-singbox/sync.env}"
 SYNC_STATE_PATH="${SYNC_STATE_PATH:-$DATA_DIR/sync-state.json}"
 SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
+SYNC_AGENT_VERSION="${SYNC_AGENT_VERSION:-0.9.4}"
 SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-60}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
 NODE_DOCKER_IMAGE="${NODE_DOCKER_IMAGE:-ghcr.io/rc-chn/marzban:latest}"
@@ -714,6 +715,7 @@ write_sync_env() {
     write_env_var NODE_DOCKER_CONTAINER_NAME "$NODE_DOCKER_CONTAINER_NAME"
     write_env_var NODE_DOCKER_PROJECT_NAME "$NODE_DOCKER_PROJECT_NAME"
     write_env_var SYNC_STATE_PATH "$SYNC_STATE_PATH"
+    write_env_var SYNC_SCRIPT_PATH "$SYNC_SCRIPT_PATH"
     write_env_var SYNC_INTERVAL_SECONDS "$SYNC_INTERVAL_SECONDS"
   } >"$tmp_path"
   install -m 0600 "$tmp_path" "$SYNC_ENV_PATH"
@@ -723,10 +725,25 @@ write_sync_env() {
   chmod 0600 "$SYNC_STATE_PATH"
 }
 
+download_sync_agent() {
+  local target_path="$1"
+  local agent_url
+  [ -n "${PANEL_URL:-}" ] || return 1
+  agent_url="${PANEL_URL%/}/api/singbox/sync-agent.sh"
+  if curl "$(curl_tls_args)" "$agent_url" -o "$target_path" \
+    && grep -q '^SYNC_AGENT_VERSION=' "$target_path"; then
+    log "downloaded sync agent: $agent_url"
+    return 0
+  fi
+  rm -f "$target_path"
+  return 1
+}
+
 install_sync_agent() {
   local tmp_path service_path timer_path
   tmp_path="$(mktemp)"
-  cat >"$tmp_path" <<'SYNC_AGENT'
+  if ! download_sync_agent "$tmp_path"; then
+    cat >"$tmp_path" <<'SYNC_AGENT'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -742,9 +759,12 @@ PANEL_URL="${PANEL_URL%/}"
 CONFIG_PATH="${CONFIG_PATH:-/etc/marzban-singbox/config.json}"
 SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
 SYNC_STATE_PATH="${SYNC_STATE_PATH:-/var/lib/marzban-singbox/sync-state.json}"
+SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
+SYNC_AGENT_VERSION="0.9.4"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
 SERVICE_NAME="${SERVICE_NAME:-marzban-sing-box}"
 NODE_DOCKER_CONTAINER_NAME="${NODE_DOCKER_CONTAINER_NAME:-marzban-sing-box}"
+NODE_DOCKER_PROJECT_NAME="${NODE_DOCKER_PROJECT_NAME:-marzban-singbox-node}"
 
 log() {
   printf '[marzban-singbox-sync] %s\n' "$*"
@@ -785,6 +805,18 @@ container_image() {
   fi
 }
 
+docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+    return
+  fi
+  return 127
+}
+
 node_link_listening() {
   local port
   if [ ! -f "$CONFIG_PATH" ] || ! command -v ss >/dev/null 2>&1; then
@@ -816,6 +848,7 @@ report_applied() {
     --arg config_hash "$hash" \
     --argjson success "$success" \
     --arg sing_box_version "$(sing_box_version)" \
+    --arg sync_agent_version "$SYNC_AGENT_VERSION" \
     --arg runtime "${RUNTIME:-}" \
     --arg container_image "$(container_image)" \
     --arg message "$message" \
@@ -824,6 +857,7 @@ report_applied() {
       config_hash: $config_hash,
       success: $success,
       sing_box_version: $sing_box_version,
+      sync_agent_version: $sync_agent_version,
       runtime: $runtime,
       container_image: $container_image,
       message: $message
@@ -858,8 +892,106 @@ restart_runtime() {
   log "restart skipped: no docker compose or systemd runtime found"
 }
 
+rewrite_compose_image() {
+  local target_image="$1"
+  local compose_path tmp_path
+  compose_path="$COMPOSE_DIR/docker-compose.yml"
+  [ -f "$compose_path" ] || {
+    printf '%s\n' "missing compose file: $compose_path" >&2
+    return 1
+  }
+  tmp_path="$(mktemp)"
+  if ! awk -v image="$target_image" '
+    BEGIN { in_service = 0; replaced = 0 }
+    /^  sing-box:/ { in_service = 1 }
+    in_service && /^    image:/ {
+      print "    image: \"" image "\""
+      replaced = 1
+      in_service = 0
+      next
+    }
+    { print }
+    END { if (!replaced) exit 2 }
+  ' "$compose_path" >"$tmp_path"; then
+    rm -f "$tmp_path"
+    printf '%s\n' "failed to update image in compose file: $compose_path" >&2
+    return 1
+  fi
+  cp "$compose_path" "${compose_path}.prev"
+  mv "$tmp_path" "$compose_path"
+}
+
+upgrade_docker_image() {
+  local target_image="$1"
+  local current_image
+  [ -n "$target_image" ] || return 0
+  if [ "${RUNTIME:-}" != "docker" ]; then
+    printf '%s\n' "docker image upgrade skipped for runtime: ${RUNTIME:-unknown}"
+    return 0
+  fi
+  command -v docker >/dev/null 2>&1 || {
+    printf '%s\n' "docker image upgrade requested but docker is not installed" >&2
+    return 1
+  }
+  current_image="$(container_image)"
+  if [ "$current_image" = "$target_image" ]; then
+    printf '%s\n' "docker image already current: $target_image"
+    return 0
+  fi
+  rewrite_compose_image "$target_image"
+  (cd "$COMPOSE_DIR" && COMPOSE_PROJECT_NAME="$NODE_DOCKER_PROJECT_NAME" docker_compose pull)
+  (cd "$COMPOSE_DIR" && COMPOSE_PROJECT_NAME="$NODE_DOCKER_PROJECT_NAME" docker_compose up -d)
+  printf '%s\n' "docker image upgraded: ${current_image:-unknown} -> $target_image"
+}
+
+upgrade_sync_agent() {
+  local agent_url="$1"
+  local target_version="$2"
+  local tmp_path
+  [ -n "$agent_url" ] || return 0
+  [ -n "$target_version" ] || return 0
+  if [ "$target_version" = "$SYNC_AGENT_VERSION" ]; then
+    printf '%s\n' "sync agent already current: $SYNC_AGENT_VERSION"
+    return 0
+  fi
+  tmp_path="$(mktemp)"
+  if ! curl "$(curl_tls_args)" "$agent_url" -o "$tmp_path"; then
+    rm -f "$tmp_path"
+    return 1
+  fi
+  if ! grep -q '^SYNC_AGENT_VERSION=' "$tmp_path"; then
+    rm -f "$tmp_path"
+    printf '%s\n' "downloaded sync agent does not declare SYNC_AGENT_VERSION" >&2
+    return 1
+  fi
+  install -m 0755 "$tmp_path" "$SYNC_SCRIPT_PATH"
+  rm -f "$tmp_path"
+  printf '%s\n' "sync agent upgraded: $SYNC_AGENT_VERSION -> $target_version"
+}
+
+apply_upgrade() {
+  local response_path="$1"
+  local apply image agent_url agent_version output
+  apply="$(jq -r '.upgrade.apply // false' "$response_path")"
+  [ "$apply" = "true" ] || return 0
+
+  output=""
+  agent_url="$(jq -r '.upgrade.agent_url // empty' "$response_path")"
+  agent_version="$(jq -r '.upgrade.agent_version // empty' "$response_path")"
+  if [ -n "$agent_url" ] || [ -n "$agent_version" ]; then
+    output="$(upgrade_sync_agent "$agent_url" "$agent_version" 2>&1)"
+    printf '%s\n' "$output"
+  fi
+
+  image="$(jq -r '.upgrade.image // empty' "$response_path")"
+  if [ -n "$image" ]; then
+    output="$(upgrade_docker_image "$image" 2>&1)"
+    printf '%s\n' "$output"
+  fi
+}
+
 main() {
-  local response changed hash next_path previous_path check_output restart_output current_hash
+  local response changed hash next_path previous_path check_output restart_output current_hash upgrade_output
   response="$(mktemp)"
   trap 'rm -f "${response:-}"' EXIT
   current_hash="$(current_config_hash)"
@@ -868,6 +1000,7 @@ main() {
     --arg node_name "${NODE_NAME:-}" \
     --arg current_config_hash "$current_hash" \
     --arg sing_box_version "$(sing_box_version)" \
+    --arg sync_agent_version "$SYNC_AGENT_VERSION" \
     --arg runtime "${RUNTIME:-}" \
     --arg container_image "$(container_image)" \
     --argjson node_link_listening "$(node_link_listening)" \
@@ -877,6 +1010,7 @@ main() {
       node_name: $node_name,
       current_config_hash: $current_config_hash,
       sing_box_version: $sing_box_version,
+      sync_agent_version: $sync_agent_version,
       runtime: $runtime,
       container_image: $container_image,
       node_link_listening: $node_link_listening,
@@ -892,6 +1026,15 @@ main() {
   hash="$(jq -r '.config_hash' "$response")"
   if [ "$changed" != "true" ]; then
     write_state "$hash"
+    if ! upgrade_output="$(apply_upgrade "$response" 2>&1)"; then
+      report_applied "$hash" false "$upgrade_output"
+      printf '%s\n' "$upgrade_output" >&2
+      exit 1
+    fi
+    if [ -n "$upgrade_output" ]; then
+      report_applied "$hash" true "$upgrade_output"
+      printf '%s\n' "$upgrade_output"
+    fi
     log "config already current: $hash"
     return
   fi
@@ -919,10 +1062,20 @@ main() {
   write_state "$hash"
   report_applied "$hash" true "${restart_output:-applied}"
   log "applied config: $hash"
+  if ! upgrade_output="$(apply_upgrade "$response" 2>&1)"; then
+    report_applied "$hash" false "$upgrade_output"
+    printf '%s\n' "$upgrade_output" >&2
+    exit 1
+  fi
+  if [ -n "$upgrade_output" ]; then
+    report_applied "$hash" true "$upgrade_output"
+    printf '%s\n' "$upgrade_output"
+  fi
 }
 
 main "$@"
 SYNC_AGENT
+  fi
   install -m 0755 "$tmp_path" "$SYNC_SCRIPT_PATH"
   rm -f "$tmp_path"
 

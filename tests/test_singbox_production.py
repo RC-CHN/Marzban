@@ -72,6 +72,69 @@ class SingBoxProductionTest(unittest.TestCase):
 
         self.assertTrue(credential.subscription_token)
 
+    def test_node_upgrade_instruction_is_disabled_by_default(self):
+        original_enabled = production.SINGBOX_NODE_AUTO_UPGRADE
+        try:
+            production.SINGBOX_NODE_AUTO_UPGRADE = False
+
+            upgrade = production.build_node_upgrade_instruction(
+                runtime="docker",
+                container_image="ghcr.io/rc-chn/marzban:v0.9.3",
+                sync_agent_version="0.9.3",
+                agent_url="https://panel.example/api/singbox/sync-agent.sh",
+            )
+
+            self.assertIsNone(upgrade)
+        finally:
+            production.SINGBOX_NODE_AUTO_UPGRADE = original_enabled
+
+    def test_node_upgrade_instruction_targets_docker_image_and_agent(self):
+        original_enabled = production.SINGBOX_NODE_AUTO_UPGRADE
+        original_image = production.SINGBOX_NODE_TARGET_IMAGE
+        original_agent = production.SINGBOX_SYNC_AGENT_VERSION
+        try:
+            production.SINGBOX_NODE_AUTO_UPGRADE = True
+            production.SINGBOX_NODE_TARGET_IMAGE = "ghcr.io/rc-chn/marzban:v0.9.4"
+            production.SINGBOX_SYNC_AGENT_VERSION = "0.9.4"
+
+            upgrade = production.build_node_upgrade_instruction(
+                runtime="docker",
+                container_image="ghcr.io/rc-chn/marzban:v0.9.3",
+                sync_agent_version="0.9.3",
+                agent_url="https://panel.example/api/singbox/sync-agent.sh",
+            )
+
+            self.assertEqual(upgrade["image"], "ghcr.io/rc-chn/marzban:v0.9.4")
+            self.assertEqual(upgrade["agent_version"], "0.9.4")
+            self.assertEqual(upgrade["agent_url"], "https://panel.example/api/singbox/sync-agent.sh")
+            self.assertTrue(upgrade["apply"])
+        finally:
+            production.SINGBOX_NODE_AUTO_UPGRADE = original_enabled
+            production.SINGBOX_NODE_TARGET_IMAGE = original_image
+            production.SINGBOX_SYNC_AGENT_VERSION = original_agent
+
+    def test_node_upgrade_instruction_is_noop_when_current(self):
+        original_enabled = production.SINGBOX_NODE_AUTO_UPGRADE
+        original_image = production.SINGBOX_NODE_TARGET_IMAGE
+        original_agent = production.SINGBOX_SYNC_AGENT_VERSION
+        try:
+            production.SINGBOX_NODE_AUTO_UPGRADE = True
+            production.SINGBOX_NODE_TARGET_IMAGE = "ghcr.io/rc-chn/marzban:v0.9.4"
+            production.SINGBOX_SYNC_AGENT_VERSION = "0.9.4"
+
+            upgrade = production.build_node_upgrade_instruction(
+                runtime="docker",
+                container_image="ghcr.io/rc-chn/marzban:v0.9.4",
+                sync_agent_version="0.9.4",
+                agent_url="https://panel.example/api/singbox/sync-agent.sh",
+            )
+
+            self.assertIsNone(upgrade)
+        finally:
+            production.SINGBOX_NODE_AUTO_UPGRADE = original_enabled
+            production.SINGBOX_NODE_TARGET_IMAGE = original_image
+            production.SINGBOX_SYNC_AGENT_VERSION = original_agent
+
 
 if __name__ == "__main__":
     unittest.main()

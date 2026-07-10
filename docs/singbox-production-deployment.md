@@ -933,6 +933,33 @@ bootstrap 会安装：
 
 Dashboard 会显示节点是否 `synced`、是否 `pending`、最近心跳时间和节点端错误信息。当前实现把超过 3 分钟未心跳的节点标记为 stale，用于提醒管理员检查节点进程、网络或 token 是否丢失。
 
+### 节点自动升级
+
+节点升级沿用 pull 模型，不需要控制面保存 SSH 密码。控制面通过 sync 响应返回可选 `upgrade` 指令，新版 `/usr/local/bin/marzban-singbox-sync` 会在每次心跳时判断是否需要升级：
+
+```text
+POST /api/singbox/nodes/sync
+GET  /api/singbox/sync-agent.sh
+```
+
+控制面环境变量：
+
+```env
+SINGBOX_NODE_AUTO_UPGRADE=false
+SINGBOX_NODE_TARGET_IMAGE=ghcr.io/rc-chn/marzban:v0.9.4
+SINGBOX_SYNC_AGENT_VERSION=0.9.4
+```
+
+默认关闭自动升级。打开 `SINGBOX_NODE_AUTO_UPGRADE=true` 后：
+
+1. 节点心跳会上报 `runtime`、当前 Docker `container_image` 和 `sync_agent_version`。
+2. Docker 节点如果当前镜像不是 `SINGBOX_NODE_TARGET_IMAGE`，控制面返回目标镜像。
+3. 节点把 `/opt/marzban-singbox/docker-compose.yml` 中的 `image:` 改成目标镜像，备份旧文件为 `docker-compose.yml.prev`，执行 `docker compose pull && docker compose up -d`。
+4. 如果节点 agent 版本低于 `SINGBOX_SYNC_AGENT_VERSION`，节点从 `/api/singbox/sync-agent.sh` 下载最新 agent 并覆盖安装到 `/usr/local/bin/marzban-singbox-sync`。
+5. 升级成功或失败都会用 `/api/singbox/nodes/sync/applied` 回报，Dashboard 的节点 message 会显示最近一次结果。
+
+已有老 agent 不会理解 `upgrade` 字段，所以从旧版本升级到首次支持自动升级的版本时，仍需要通过 bootstrap/enrollment 或 SSH 执行一次 agent 更新。完成这次过渡后，后续镜像和 agent 升级都可以由节点自动拉取。
+
 现在管理员在面板改这些内容后，不需要再 SSH 到每台节点手动下发：
 
 - 用户出口节点。
@@ -947,6 +974,7 @@ Dashboard 会显示节点是否 `synced`、是否 `pending`、最近心跳时间
 - 服务器防火墙、云安全组、宿主机端口冲突和 Docker/系统服务故障。
 - sync token 泄露或节点重装后，需要重新生成 enrollment 命令接入。
 - 控制面 CA 轮换、证书吊销和灾难恢复。
+- 从不支持升级协议的旧 agent 过渡到首个支持版本时，需要手动更新一次 agent。
 
 ### 参数
 
