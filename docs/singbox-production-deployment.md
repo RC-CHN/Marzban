@@ -748,30 +748,60 @@ systemctl status marzban-sing-box
 
 ### Docker 方式
 
-Docker 方式适合和现有容器化部署合并。
+Docker 方式是当前公网部署的推荐路径，适合和现有容器化部署合并。`scripts/singbox-bootstrap.sh --runtime docker` 会安装 Docker/Compose，生成 `/opt/marzban-singbox/docker-compose.yml`，并用 `network_mode: host` 启动 sing-box 容器。
 
-节点容器需要挂载：
-
-```text
-/etc/marzban-singbox/config.json
-/etc/marzban-singbox/certs/
-```
-
-需要发布对应 TCP/UDP 端口。示例：
+默认生成的 compose 等价于：
 
 ```yaml
 services:
   sing-box:
-    image: marzban-singbox-node:ubuntu2204
+    image: ghcr.io/rc-chn/marzban:latest
+    container_name: marzban-sing-box
     restart: unless-stopped
     network_mode: host
     volumes:
-      - /etc/marzban-singbox/config.json:/etc/marzban-singbox/config.json:ro
-      - /etc/marzban-singbox/certs:/etc/marzban-singbox/certs:ro
-    command: ["/opt/marzban-singbox/bin/sing-box", "run", "-c", "/etc/marzban-singbox/config.json"]
+      - /etc/marzban-singbox:/etc/marzban-singbox:rw
+      - /var/lib/marzban-singbox:/var/lib/marzban-singbox:rw
+    command: ["/usr/local/bin/sing-box", "run", "-c", "/etc/marzban-singbox/config.json"]
 ```
 
 生产节点推荐使用 `network_mode: host`，避免 UDP 代理和端口映射引入额外问题。
+
+可按节点覆盖：
+
+```bash
+NODE_DOCKER_IMAGE=ghcr.io/rc-chn/marzban:v0.9.2
+NODE_DOCKER_NETWORK_MODE=host
+NODE_DOCKER_CONTAINER_NAME=marzban-sing-box
+NODE_DOCKER_CONFIG_ROOT=/etc/marzban-singbox
+NODE_DOCKER_DATA_ROOT=/var/lib/marzban-singbox
+COMPOSE_DIR=/opt/marzban-singbox
+```
+
+如果服务器拉 Docker/apt 需要代理，执行 bootstrap 时传入代理环境变量。脚本会把 `HTTP_PROXY/HTTPS_PROXY/NO_PROXY` 用于 apt，并在 systemd 机器上写入 Docker daemon drop-in，确保 `docker pull ghcr.io/...` 也走代理：
+
+```bash
+curl -fsSLk https://panel.example.com/api/singbox/bootstrap.sh | \
+  sudo env \
+    HTTP_PROXY=http://192.168.44.2:10820 \
+    HTTPS_PROXY=http://192.168.44.2:10820 \
+    NO_PROXY=localhost,127.0.0.1,panel.example.com \
+    bash -s -- enroll-node \
+      --panel-url https://panel.example.com \
+      --enroll-token TOKEN \
+      --node-name node-a \
+      --node-host 203.0.113.10 \
+      --runtime docker \
+      --panel-insecure
+```
+
+也可以显式设置 Docker daemon 代理变量：
+
+```bash
+DOCKER_HTTP_PROXY=http://192.168.44.2:10820
+DOCKER_HTTPS_PROXY=http://192.168.44.2:10820
+DOCKER_NO_PROXY=localhost,127.0.0.1
+```
 
 ## Bootstrap 安装脚本
 
@@ -850,7 +880,7 @@ scripts/singbox-bootstrap.sh logs
 - 检查系统版本，生产默认支持 Ubuntu 22.04。
 - 安装或更新固定版本 sing-box。
 - 创建 `/etc/marzban-singbox` 和 `/var/lib/marzban-singbox`。
-- 写入 systemd service 或 Docker Compose 文件。
+- systemd 运行时写入 `marzban-sing-box` service；Docker 运行时安装 Docker/Compose、写入 `/opt/marzban-singbox/docker-compose.yml` 并启动容器。
 - 写入占位 `/etc/marzban-singbox/config.json`。
 - 执行 `sing-box check -c /etc/marzban-singbox/config.json`。
 
@@ -862,6 +892,7 @@ scripts/singbox-bootstrap.sh logs
 - 接收控制面 CA、节点证书、公网入口证书和节点配置。
 - 写入 `/etc/marzban-singbox/config.json.next` 并执行 `sing-box check`。
 - 校验通过后备份旧配置为 `.prev`，替换为新配置并重启 sing-box。
+- 保存控制面返回的节点同步 token，并安装节点侧 pull-sync agent。
 - `/api/singbox/bootstrap.sh` 和 `/api/singbox/nodes/enroll` 使用登录级别的 IP 限速。
 
 节点目录建议：
@@ -869,11 +900,53 @@ scripts/singbox-bootstrap.sh logs
 ```text
 /etc/marzban-singbox/config.json
 /etc/marzban-singbox/config.json.prev
+/etc/marzban-singbox/sync.env
 /etc/marzban-singbox/node-link/ca.crt
 /etc/marzban-singbox/node-link/node.crt
 /etc/marzban-singbox/node-link/node.key
 /var/lib/marzban-singbox
+/var/lib/marzban-singbox/sync-state.json
 ```
+
+### 自动同步和心跳
+
+节点完成 `enroll-node` 后，控制面会签发一个长期 node sync token。控制面只保存 token hash，明文 token 只写入节点侧 `/etc/marzban-singbox/sync.env`，权限为 `0600`。
+
+bootstrap 会安装：
+
+```text
+/usr/local/bin/marzban-singbox-sync
+/etc/systemd/system/marzban-singbox-sync.service
+/etc/systemd/system/marzban-singbox-sync.timer
+```
+
+在有 systemd 的生产节点上，timer 默认每 60 秒执行一次。容器测试环境没有 systemd 时，脚本仍会安装，测试或运维可以手动执行 `/usr/local/bin/marzban-singbox-sync`。
+
+同步流程：
+
+1. 节点读取本地 `sync-state.json` 中的当前配置 hash。
+2. 节点用 sync token 调用 `POST /api/singbox/nodes/sync`，同时上报 sing-box 版本、运行方式和 node-link 监听状态。
+3. 控制面重新生成该节点目标配置，并返回目标 hash；只有 hash 不一致时才返回完整配置。
+4. 节点把新配置写入 `config.json.next`，先执行 `sing-box check -c config.json.next`。
+5. 校验通过后备份旧配置为 `config.json.prev`，替换 `config.json`，再按运行方式重启 sing-box；Docker 运行时会优先执行 `SYNC_RESTART_COMMAND`，否则用 `/opt/marzban-singbox/docker-compose.yml` 重启 sing-box 容器。
+6. 节点调用 `POST /api/singbox/nodes/sync/applied` 回报成功或失败。
+
+Dashboard 会显示节点是否 `synced`、是否 `pending`、最近心跳时间和节点端错误信息。当前实现把超过 3 分钟未心跳的节点标记为 stale，用于提醒管理员检查节点进程、网络或 token 是否丢失。
+
+现在管理员在面板改这些内容后，不需要再 SSH 到每台节点手动下发：
+
+- 用户出口节点。
+- 节点入口/出口开关。
+- 节点间链路启停。
+- 节点 public ports、node-link 端口和入口 TLS 模式。
+- sing-box 用户凭据和订阅策略。
+
+仍然需要人工介入的情况：
+
+- 首次把节点加入集群时执行一次 Dashboard 生成的 enrollment 命令。
+- 服务器防火墙、云安全组、宿主机端口冲突和 Docker/系统服务故障。
+- sync token 泄露或节点重装后，需要重新生成 enrollment 命令接入。
+- 控制面 CA 轮换、证书吊销和灾难恢复。
 
 ### 参数
 
@@ -917,6 +990,17 @@ scripts/singbox-bootstrap.sh install-node \
 - `--public-ports`
 - `--panel-insecure`，只在控制面使用自签名 HTTPS 时需要
 - `--runtime systemd|docker`
+- `--sync-interval`，默认 60 秒
+
+Docker 运行时可选环境变量：
+
+- `NODE_DOCKER_IMAGE`，默认 `ghcr.io/rc-chn/marzban:latest`
+- `NODE_DOCKER_NETWORK_MODE`，默认 `host`
+- `NODE_DOCKER_CONTAINER_NAME`，默认 `marzban-sing-box`
+- `NODE_DOCKER_CONFIG_ROOT`，默认 `/etc/marzban-singbox`
+- `NODE_DOCKER_DATA_ROOT`，默认 `/var/lib/marzban-singbox`
+- `COMPOSE_DIR`，默认 `/opt/marzban-singbox`
+- `DOCKER_HTTP_PROXY`、`DOCKER_HTTPS_PROXY`、`DOCKER_NO_PROXY`，默认继承 `HTTP_PROXY/HTTPS_PROXY/NO_PROXY`
 
 一次性 enrollment token 会出现在管理员复制的命令中，所以必须短有效期、只用一次，并且控制面只存 token hash。节点私钥必须只在节点本机生成和落盘，不能上传到控制面；脚本向控制面提交的是 CSR，不是私钥。
 
@@ -927,6 +1011,8 @@ scripts/singbox-bootstrap.sh install-node \
 ```text
 POST /api/singbox/nodes/{node_id}/enrollment
 POST /api/singbox/nodes/enroll
+POST /api/singbox/nodes/sync
+POST /api/singbox/nodes/sync/applied
 GET  /api/singbox/bootstrap.sh
 ```
 
@@ -937,7 +1023,8 @@ GET  /api/singbox/bootstrap.sh
 3. 在远端 Ubuntu 22.04 节点执行该命令。
 4. 节点脚本安装 sing-box，生成私钥和 CSR，调用控制面 enrollment API。
 5. 控制面校验 token、节点名和 `public_host`，用内部 CA 签发证书并返回当前节点配置。
-6. 节点脚本写入证书和配置，`sing-box check` 成功后启动服务。
+6. 节点脚本写入证书、配置和 sync token，`sing-box check` 成功后启动服务。
+7. 后续配置变更由节点侧 pull-sync agent 自动拉取、校验、应用并回报心跳。
 
 入口 TLS 模式建议：
 
@@ -1013,7 +1100,14 @@ config hash: ...
 - 用户默认出口策略。
 - TLS `server_name` 和证书校验配置。
 
-`app/core/singbox/subscription.py` 已接入正式 `/sub/{token}` 路由，支持 sing-box JSON 和 Clash/Mihomo YAML，并可用 `entry_node_id` 选择入口节点。生产前仍建议继续补齐各客户端兼容性细节，尤其是：
+`app/core/singbox/subscription.py` 已接入正式公开订阅路由。Dashboard 保存 sing-box 用户策略后会返回不可猜的订阅 token，并展示可直接给客户端使用的 URL：
+
+```text
+GET /api/singbox/public-subscription/{token}/sing-box?entry_node_id=1
+GET /api/singbox/public-subscription/{token}/clash?entry_node_id=1
+```
+
+公开订阅接口不需要 admin Bearer token；admin-only 的 `/api/singbox/subscription/{username}/...` 仍保留用于管理端调试。订阅支持 sing-box JSON 和 Clash/Mihomo YAML，并可用 `entry_node_id` 选择入口节点。生产前仍建议继续补齐各客户端兼容性细节，尤其是：
 
 - Hysteria2 字段差异。
 - TUIC 字段差异。
@@ -1364,6 +1458,7 @@ rollback_applied
 - 管理 API 只允许 sudo admin 操作节点配置和链路密钥。
 - 订阅 token 必须足够随机，支持重置。
 - 节点下发通道必须有认证和加密。
+- 节点同步 token 只保存 hash，节点侧明文文件权限必须是 `0600`。
 - 节点间链路不使用 `insecure: true`。
 - 节点间链路至少校验控制面内部 CA，推荐启用 mTLS。
 - 控制面 CA 私钥不能下发到节点。
@@ -1384,6 +1479,7 @@ M1 到 M4 的代码骨架已经落地：
 - 节点配置生成和 hash 记录。
 - local/SSH/manual 三种配置部署模式，以及按节点顺序滚动 deploy API。
 - 控制面内部 CA 初始化、节点证书签发 API 和一次性 enrollment token。
+- 节点 pull-sync agent、sync token、心跳和配置自动应用 API。
 - 生产 TLS 默认安全，节点间 mTLS 由 Docker POC 验证。
 - 订阅路由接入现有 `/sub/{token}`。
 - 粗略节点统计上报和查询。

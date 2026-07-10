@@ -62,10 +62,15 @@ services:
       <<: *e2e-proxy-env
       NODE_NAME: node-a
       SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+      NODE_DOCKER_CONTAINER_NAME: marzban-singbox-e2e-node-a
     volumes:
       - ./scripts:/e2e/scripts:ro
       - e2e-state:/state:ro
       - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+      - ./runtime/node-a/etc:/etc/marzban-singbox
+      - ./runtime/node-a/data:/var/lib/marzban-singbox
+      - ./runtime/node-a/compose:/opt/marzban-singbox
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       e2e_net:
         ipv4_address: 172.30.10.11
@@ -77,10 +82,15 @@ services:
       <<: *e2e-proxy-env
       NODE_NAME: node-b
       SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+      NODE_DOCKER_CONTAINER_NAME: marzban-singbox-e2e-node-b
     volumes:
       - ./scripts:/e2e/scripts:ro
       - e2e-state:/state:ro
       - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+      - ./runtime/node-b/etc:/etc/marzban-singbox
+      - ./runtime/node-b/data:/var/lib/marzban-singbox
+      - ./runtime/node-b/compose:/opt/marzban-singbox
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       e2e_net:
         ipv4_address: 172.30.10.12
@@ -92,10 +102,15 @@ services:
       <<: *e2e-proxy-env
       NODE_NAME: node-c
       SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+      NODE_DOCKER_CONTAINER_NAME: marzban-singbox-e2e-node-c
     volumes:
       - ./scripts:/e2e/scripts:ro
       - e2e-state:/state:ro
       - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+      - ./runtime/node-c/etc:/etc/marzban-singbox
+      - ./runtime/node-c/data:/var/lib/marzban-singbox
+      - ./runtime/node-c/compose:/opt/marzban-singbox
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       e2e_net:
         ipv4_address: 172.30.10.13

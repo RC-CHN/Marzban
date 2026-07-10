@@ -113,9 +113,11 @@ celerybeat.pid
 
 # Environments
 .venv
+.uv-cache/
 venv/
 venv.bak/
 .vscode/
+docker/singbox-bootstrap-e2e/runtime/
 
 # Spyder project settings
 .spyderproject
