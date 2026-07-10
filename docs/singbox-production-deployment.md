@@ -1105,9 +1105,22 @@ config hash: ...
 ```text
 GET /api/singbox/public-subscription/{token}/sing-box?entry_node_id=1
 GET /api/singbox/public-subscription/{token}/clash?entry_node_id=1
+GET /api/singbox/public-subscription/{token}/v2rayn?entry_node_id=1
 ```
 
-公开订阅接口不需要 admin Bearer token；admin-only 的 `/api/singbox/subscription/{username}/...` 仍保留用于管理端调试。订阅支持 sing-box JSON 和 Clash/Mihomo YAML，并可用 `entry_node_id` 选择入口节点。生产前仍建议继续补齐各客户端兼容性细节，尤其是：
+公开订阅接口不需要 admin Bearer token；admin-only 的 `/api/singbox/subscription/{username}/...` 仍保留用于管理端调试。订阅支持 sing-box JSON、Clash/Mihomo YAML 和 v2rayN base64 分享链接列表，并可用 `entry_node_id` 选择入口节点。
+
+v2rayN 订阅按其最新版分享链接解析器生成：
+
+- `vmess://`
+- `vless://`
+- `trojan://`
+- `ss://`
+- `hysteria2://`
+- `tuic://`
+- `anytls://`
+
+Hy2、TUIC、AnyTLS 和 Trojan 会显式写入 `security=tls`、`sni` 与 `insecure/allowInsecure`，以匹配当前 sing-box 服务端入口配置。生产前仍建议继续补齐各客户端兼容性细节，尤其是：
 
 - Hysteria2 字段差异。
 - TUIC 字段差异。

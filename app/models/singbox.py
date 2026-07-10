@@ -141,6 +141,7 @@ class SingBoxSubscriptionLinks(BaseModel):
     token: str
     singbox: str
     clash: str
+    v2rayn: str
 
 
 class SingBoxUserPolicyResponse(BaseModel):

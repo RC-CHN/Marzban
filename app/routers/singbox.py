@@ -75,6 +75,7 @@ def _public_subscription_links(token: str) -> SingBoxSubscriptionLinks:
         token=token,
         singbox=f"{base}/sing-box",
         clash=f"{base}/clash",
+        v2rayn=f"{base}/v2rayn",
     )
 
 
@@ -626,6 +627,22 @@ def get_admin_clash_subscription(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/subscription/{username}/v2rayn", response_class=PlainTextResponse)
+def get_admin_v2rayn_subscription(
+    username: str,
+    entry_node_id: int | None = None,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    user = crud.get_user(db, username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        return production.build_user_subscription(db, user, entry_node_id, "v2rayn")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/public-subscription/{token}/sing-box")
 def get_public_singbox_subscription(
     token: str,
@@ -652,6 +669,21 @@ def get_public_clash_subscription(
         raise HTTPException(status_code=404, detail="Subscription not found")
     try:
         return production.build_user_subscription(db, credential.user, entry_node_id, "clash")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/public-subscription/{token}/v2rayn", response_class=PlainTextResponse)
+def get_public_v2rayn_subscription(
+    token: str,
+    entry_node_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    credential = production.get_user_credential_by_subscription_token(db, token)
+    if not credential or not credential.user:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    try:
+        return production.build_user_subscription(db, credential.user, entry_node_id, "v2rayn")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

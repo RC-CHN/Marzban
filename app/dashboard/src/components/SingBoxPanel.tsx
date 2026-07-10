@@ -109,6 +109,7 @@ type SingBoxSubscriptionLinks = {
   token: string;
   singbox: string;
   clash: string;
+  v2rayn: string;
 };
 
 type SingBoxUserPolicyResponse = {
@@ -732,6 +733,10 @@ export const SingBoxPanel: FC = () => {
                   <FormControl>
                     <FormLabel fontSize="xs">Clash subscription</FormLabel>
                     <Input size="sm" value={subscriptionUrl(subscriptionLinks.clash)} isReadOnly />
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel fontSize="xs">v2rayN subscription</FormLabel>
+                    <Input size="sm" value={subscriptionUrl(subscriptionLinks.v2rayn)} isReadOnly />
                   </FormControl>
                 </>
               )}

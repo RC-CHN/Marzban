@@ -1,18 +1,38 @@
+import base64
 import importlib.util
 import sys
 import types
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _ensure_package(name: str) -> None:
+class _DummyScheduler:
+    def add_job(self, *args, **kwargs):
+        return None
+
+    def scheduled_job(self, *args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
+
+def _ensure_package(name: str, path: Path) -> None:
     if name in sys.modules:
+        package_path = getattr(sys.modules[name], "__path__", None)
+        if package_path is not None and str(path) not in package_path:
+            package_path.append(str(path))
+        if name == "app" and not hasattr(sys.modules[name], "scheduler"):
+            sys.modules[name].scheduler = _DummyScheduler()
         return
     package = types.ModuleType(name)
-    package.__path__ = []
+    package.__path__ = [str(path)]
+    if name == "app":
+        package.scheduler = _DummyScheduler()
     sys.modules[name] = package
 
 
@@ -25,8 +45,9 @@ def _load_module(name: str, path: Path):
     return module
 
 
-for package_name in ("app", "app.core", "app.core.singbox"):
-    _ensure_package(package_name)
+_ensure_package("app", ROOT / "app")
+_ensure_package("app.core", ROOT / "app/core")
+_ensure_package("app.core.singbox", ROOT / "app/core/singbox")
 
 config = _load_module("app.core.singbox.config", ROOT / "app/core/singbox/config.py")
 subscription = _load_module("app.core.singbox.subscription", ROOT / "app/core/singbox/subscription.py")
@@ -40,6 +61,12 @@ SingBoxNode = config.SingBoxNode
 SingBoxUser = config.SingBoxUser
 SingBoxUserCredentials = config.SingBoxUserCredentials
 TLSSettings = config.TLSSettings
+
+
+def tearDownModule():
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            sys.modules.pop(module_name, None)
 
 
 class SingBoxConfigBuilderTest(unittest.TestCase):
@@ -182,6 +209,26 @@ class SingBoxConfigBuilderTest(unittest.TestCase):
         clash_doc = subscription.build_clash_subscription(builder, "node-a", user, SUPPORTED_PROTOCOLS)
         for protocol in SUPPORTED_PROTOCOLS:
             self.assertIn(f'"node-a-{protocol}"', clash_doc)
+
+    def test_v2rayn_subscription_exports_each_supported_protocol(self):
+        builder = self._builder()
+        user = self._user()
+
+        encoded = subscription.build_v2rayn_subscription(builder, "node-a", user, SUPPORTED_PROTOCOLS)
+        decoded = base64.b64decode(encoded).decode()
+        links = decoded.splitlines()
+        by_scheme = {urlparse(link).scheme: urlparse(link) for link in links}
+
+        self.assertEqual(len(links), len(SUPPORTED_PROTOCOLS))
+        self.assertEqual(
+            set(by_scheme),
+            {"hysteria2", "tuic", "anytls", "vmess", "vless", "trojan", "ss"},
+        )
+        for scheme in ("hysteria2", "tuic", "anytls", "trojan"):
+            query = parse_qs(by_scheme[scheme].query)
+            self.assertEqual(query["security"], ["tls"])
+            self.assertEqual(query["sni"], ["node-a.example"])
+        self.assertEqual(parse_qs(by_scheme["vless"].query)["security"], ["none"])
 
 
 if __name__ == "__main__":

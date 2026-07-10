@@ -365,7 +365,11 @@ def build_user_subscription(
     entry_node_id: int | None = None,
     config_format: str = "sing-box",
 ) -> str | dict:
-    from app.core.singbox.subscription import build_clash_subscription, build_singbox_subscription
+    from app.core.singbox.subscription import (
+        build_clash_subscription,
+        build_singbox_subscription,
+        build_v2rayn_subscription,
+    )
 
     credential = ensure_user_credentials(db, user)
     builder = build_builder(db)
@@ -374,6 +378,8 @@ def build_user_subscription(
     singbox_user = _builder_user(credential)
     if config_format in {"clash", "clash-meta"}:
         return build_clash_subscription(builder, entry_node.name, singbox_user, protocols)
+    if config_format in {"v2rayn", "v2ray"}:
+        return build_v2rayn_subscription(builder, entry_node.name, singbox_user, protocols)
     return build_singbox_subscription(builder, entry_node.name, singbox_user, protocols)
 
 
