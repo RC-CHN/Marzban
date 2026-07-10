@@ -45,6 +45,7 @@ type SingBoxNode = {
   public_host: string;
   entry_enabled: boolean;
   exit_enabled: boolean;
+  public_ports?: Partial<SingBoxPublicPorts> | null;
   public_tls_mode: SingBoxTLSMode;
   public_tls_cert_path?: string | null;
   public_tls_key_path?: string | null;
@@ -57,6 +58,15 @@ type SingBoxNode = {
 };
 
 type SingBoxTLSMode = "system-ca" | "ip-ca" | "ip-insecure";
+type SingBoxProtocol =
+  | "hysteria2"
+  | "tuic"
+  | "anytls"
+  | "vmess"
+  | "vless"
+  | "trojan"
+  | "shadowsocks";
+type SingBoxPublicPorts = Record<SingBoxProtocol, number>;
 
 type SingBoxLink = {
   id: number;
@@ -91,7 +101,7 @@ type SingBoxEnrollment = {
 };
 
 const QueryKey = "singbox-panel";
-const DefaultPublicCaPath = "/etc/sing-box/certs/ca.crt";
+const DefaultPublicCaPath = "/etc/marzban-singbox/certs/ca.crt";
 const TLSModes: { value: SingBoxTLSMode; label: string }[] = [
   { value: "system-ca", label: "System CA" },
   { value: "ip-ca", label: "IP CA" },
@@ -105,7 +115,16 @@ const Protocols = [
   "vless",
   "trojan",
   "shadowsocks",
-];
+] as const;
+const DefaultPublicPorts: SingBoxPublicPorts = {
+  hysteria2: 11001,
+  tuic: 11002,
+  anytls: 11003,
+  vmess: 11004,
+  vless: 11005,
+  trojan: 11006,
+  shadowsocks: 11007,
+};
 
 const Icon = ({ as: Component }: { as: ElementType }) => (
   <Component width="16px" height="16px" strokeWidth={2} />
@@ -118,16 +137,31 @@ const tlsModeLabel = (mode: SingBoxTLSMode | "node-controlled") => {
   return "system CA";
 };
 
+const isValidPort = (port: number) => Number.isInteger(port) && port >= 1 && port <= 65535;
+
+const publicPortsFor = (node: SingBoxNode): SingBoxPublicPorts => ({
+  ...DefaultPublicPorts,
+  ...(node.public_ports || {}),
+});
+
+const publicPortSummary = (node: SingBoxNode) => {
+  const ports = publicPortsFor(node);
+  return Protocols.map((protocol) => `${protocol}:${ports[protocol]}`).join(", ");
+};
+
 export const SingBoxPanel: FC = () => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [nodeName, setNodeName] = useState("");
   const [nodeHost, setNodeHost] = useState("");
+  const [nodeLinkPort, setNodeLinkPort] = useState(12443);
+  const [nodePublicPorts, setNodePublicPorts] =
+    useState<SingBoxPublicPorts>(DefaultPublicPorts);
   const [nodeTlsMode, setNodeTlsMode] = useState<SingBoxTLSMode>("system-ca");
   const [nodeCaPath, setNodeCaPath] = useState(DefaultPublicCaPath);
   const [policyUsername, setPolicyUsername] = useState("");
   const [policyExitNodeId, setPolicyExitNodeId] = useState("");
-  const [policyProtocols, setPolicyProtocols] = useState(Protocols);
+  const [policyProtocols, setPolicyProtocols] = useState<SingBoxProtocol[]>([...Protocols]);
   const [enrollmentCommand, setEnrollmentCommand] = useState("");
   const [subscriptionLinks, setSubscriptionLinks] = useState<{
     singbox: string;
@@ -163,6 +197,8 @@ export const SingBoxPanel: FC = () => {
         body: {
           name: nodeName,
           public_host: nodeHost,
+          node_link_port: nodeLinkPort,
+          public_ports: nodePublicPorts,
           public_tls_mode: nodeTlsMode,
           public_tls_ca_cert_path: nodeTlsMode === "ip-ca" ? nodeCaPath : null,
           rebuild_links: true,
@@ -172,6 +208,8 @@ export const SingBoxPanel: FC = () => {
       onSuccess: () => {
         setNodeName("");
         setNodeHost("");
+        setNodeLinkPort(12443);
+        setNodePublicPorts(DefaultPublicPorts);
         setNodeTlsMode("system-ca");
         setNodeCaPath(DefaultPublicCaPath);
         invalidate();
@@ -278,6 +316,9 @@ export const SingBoxPanel: FC = () => {
   const nodeTlsModes = Array.from(new Set(nodes.map((node) => node.public_tls_mode)));
   const publicTlsMode = nodeTlsModes.length === 1 ? nodeTlsModes[0] : status?.public_tls.mode;
   const publicTlsLabel = publicTlsMode ? `entry ${tlsModeLabel(publicTlsMode)}` : "entry TLS";
+  const nodePortsValid =
+    isValidPort(nodeLinkPort) &&
+    Protocols.every((protocol) => isValidPort(nodePublicPorts[protocol]));
 
   return (
     <Box
@@ -343,6 +384,7 @@ export const SingBoxPanel: FC = () => {
                     <Th>TLS</Th>
                     <Th>Entry</Th>
                     <Th>Exit</Th>
+                    <Th>Ports</Th>
                     <Th>Status</Th>
                     <Th>Hash</Th>
                     <Th />
@@ -401,6 +443,14 @@ export const SingBoxPanel: FC = () => {
                         />
                       </Td>
                       <Td>
+                        <Tooltip label={`node-link:${node.node_link_port}, ${publicPortSummary(node)}`}>
+                          <Text maxW="150px" isTruncated fontFamily="mono" fontSize="xs">
+                            {node.node_link_port} / {publicPortsFor(node).hysteria2}-
+                            {publicPortsFor(node).shadowsocks}
+                          </Text>
+                        </Tooltip>
+                      </Td>
+                      <Td>
                         <Badge colorScheme={node.status === "connected" ? "green" : "gray"}>
                           {node.status}
                         </Badge>
@@ -448,7 +498,7 @@ export const SingBoxPanel: FC = () => {
               <Text fontSize="sm" fontWeight="medium">
                 Add node
               </Text>
-              <HStack align="flex-end">
+              <Grid templateColumns={{ base: "1fr", xl: "repeat(4, minmax(0, 1fr))" }} gap={2}>
                 <FormControl>
                   <FormLabel fontSize="xs">Name</FormLabel>
                   <Input size="sm" value={nodeName} onChange={(e) => setNodeName(e.target.value)} />
@@ -476,6 +526,17 @@ export const SingBoxPanel: FC = () => {
                     ))}
                   </Select>
                 </FormControl>
+                <FormControl>
+                  <FormLabel fontSize="xs">Link port</FormLabel>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={nodeLinkPort}
+                    onChange={(e) => setNodeLinkPort(Number(e.target.value))}
+                  />
+                </FormControl>
                 {nodeTlsMode === "ip-ca" && (
                   <FormControl>
                     <FormLabel fontSize="xs">CA path</FormLabel>
@@ -486,10 +547,37 @@ export const SingBoxPanel: FC = () => {
                     />
                   </FormControl>
                 )}
+              </Grid>
+              <Grid templateColumns={{ base: "repeat(2, minmax(0, 1fr))", xl: "repeat(4, minmax(0, 1fr))" }} gap={2}>
+                {Protocols.map((protocol) => (
+                  <FormControl key={protocol}>
+                    <FormLabel fontSize="xs">{protocol}</FormLabel>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={nodePublicPorts[protocol]}
+                      onChange={(e) =>
+                        setNodePublicPorts((current) => ({
+                          ...current,
+                          [protocol]: Number(e.target.value),
+                        }))
+                      }
+                    />
+                  </FormControl>
+                ))}
+              </Grid>
+              <HStack justify="flex-end">
                 <Button
                   size="sm"
                   onClick={() => addNode.mutate()}
-                  isDisabled={!nodeName || !nodeHost || (nodeTlsMode === "ip-ca" && !nodeCaPath)}
+                  isDisabled={
+                    !nodeName ||
+                    !nodeHost ||
+                    !nodePortsValid ||
+                    (nodeTlsMode === "ip-ca" && !nodeCaPath)
+                  }
                   isLoading={addNode.isLoading}
                   leftIcon={<Icon as={PlusIcon} />}
                 >
