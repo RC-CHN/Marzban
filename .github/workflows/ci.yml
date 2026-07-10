@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      run_bootstrap_e2e:
+        description: Run the Docker bootstrap e2e stack
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools==80.9.0
+          pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+
+      - name: Run Python checks
+        run: bash scripts/ci-python.sh
+
+  dashboard:
+    name: Dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dashboard
+        run: VITE_BASE_API=/api/ npm run build --if-present -- --outDir build --assetsDir statics
+
+      - name: Create 404.html
+        run: cp ./build/index.html ./build/404.html
+
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    needs:
+      - python
+      - dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/dashboard/package-lock.json
+
+      - name: Build dashboard assets
+        working-directory: app/dashboard
+        run: |
+          npm ci
+          VITE_BASE_API=/api/ npm run build --if-present -- --outDir build --assetsDir statics
+          cp ./build/index.html ./build/404.html
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+
+  bootstrap-e2e:
+    name: Bootstrap e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_bootstrap_e2e }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Docker bootstrap e2e
+        run: bash docker/singbox-bootstrap-e2e/scripts/run-tests.sh
