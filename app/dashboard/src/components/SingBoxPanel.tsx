@@ -53,8 +53,12 @@ type SingBoxNode = {
   node_link_port: number;
   deploy_method: "manual" | "local" | "ssh";
   status: "connected" | "connecting" | "error" | "disabled";
+  version?: string | null;
+  message?: string | null;
+  sync_enabled?: boolean | null;
   last_config_hash?: string | null;
   applied_config_hash?: string | null;
+  last_seen_at?: string | null;
 };
 
 type SingBoxTLSMode = "system-ca" | "ip-ca" | "ip-insecure";
@@ -99,6 +103,20 @@ type SingBoxEnrollment = {
   expires_at: string;
   bootstrap_url: string;
   command: string;
+};
+
+type SingBoxSubscriptionLinks = {
+  token: string;
+  singbox: string;
+  clash: string;
+};
+
+type SingBoxUserPolicyResponse = {
+  username: string;
+  enabled_protocols: SingBoxProtocol[];
+  exit_node_id?: number | null;
+  has_credentials: boolean;
+  public_subscription?: SingBoxSubscriptionLinks | null;
 };
 
 const QueryKey = "singbox-panel";
@@ -150,6 +168,16 @@ const publicPortSummary = (node: SingBoxNode) => {
   return Protocols.map((protocol) => `${protocol}:${ports[protocol]}`).join(", ");
 };
 
+const syncPending = (node: SingBoxNode) =>
+  Boolean(node.last_config_hash && node.last_config_hash !== node.applied_config_hash);
+
+const lastSeenLabel = (value?: string | null) => {
+  if (!value) return "never";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  return date.toLocaleTimeString();
+};
+
 export const SingBoxPanel: FC = () => {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -161,13 +189,11 @@ export const SingBoxPanel: FC = () => {
   const [nodeTlsMode, setNodeTlsMode] = useState<SingBoxTLSMode>("system-ca");
   const [nodeCaPath, setNodeCaPath] = useState(DefaultPublicCaPath);
   const [policyUsername, setPolicyUsername] = useState("");
+  const [policyEntryNodeId, setPolicyEntryNodeId] = useState("");
   const [policyExitNodeId, setPolicyExitNodeId] = useState("");
   const [policyProtocols, setPolicyProtocols] = useState<SingBoxProtocol[]>([...Protocols]);
   const [enrollmentCommand, setEnrollmentCommand] = useState("");
-  const [subscriptionLinks, setSubscriptionLinks] = useState<{
-    singbox: string;
-    clash: string;
-  } | null>(null);
+  const [subscriptionLinks, setSubscriptionLinks] = useState<SingBoxSubscriptionLinks | null>(null);
 
   const nodesQuery = useQuery({
     queryKey: [QueryKey, "nodes"],
@@ -189,6 +215,12 @@ export const SingBoxPanel: FC = () => {
     queryClient.invalidateQueries([QueryKey, "nodes"]);
     queryClient.invalidateQueries([QueryKey, "links"]);
     queryClient.invalidateQueries([QueryKey, "status"]);
+  };
+  const subscriptionUrl = (path: string) => {
+    const absolute = path.startsWith("http") ? path : `${window.location.origin}${path}`;
+    if (!policyEntryNodeId) return absolute;
+    const separator = absolute.includes("?") ? "&" : "?";
+    return `${absolute}${separator}entry_node_id=${policyEntryNodeId}`;
   };
 
   const addNode = useMutation(
@@ -288,7 +320,7 @@ export const SingBoxPanel: FC = () => {
 
   const savePolicy = useMutation(
     () =>
-      fetch(`/singbox/users`, {
+      fetch<SingBoxUserPolicyResponse>(`/singbox/users`, {
         method: "POST",
         body: {
           username: policyUsername,
@@ -297,12 +329,8 @@ export const SingBoxPanel: FC = () => {
         },
       }),
     {
-      onSuccess: () => {
-        const base = `${window.location.origin}/api/singbox/subscription/${policyUsername}`;
-        setSubscriptionLinks({
-          singbox: `${base}/sing-box`,
-          clash: `${base}/clash`,
-        });
+      onSuccess: (data) => {
+        setSubscriptionLinks(data.public_subscription || null);
         generateSuccessMessage("sing-box user policy saved", toast);
       },
       onError: (e) => {
@@ -454,9 +482,23 @@ export const SingBoxPanel: FC = () => {
                         </Tooltip>
                       </Td>
                       <Td>
-                        <Badge colorScheme={node.status === "connected" ? "green" : "gray"}>
-                          {node.status}
-                        </Badge>
+                        <VStack align="start" spacing={1}>
+                          <Badge colorScheme={node.status === "connected" ? "green" : "gray"}>
+                            {node.status}
+                          </Badge>
+                          <Badge
+                            colorScheme={
+                              node.sync_enabled ? (syncPending(node) ? "orange" : "green") : "gray"
+                            }
+                          >
+                            {node.sync_enabled ? (syncPending(node) ? "pending" : "synced") : "manual"}
+                          </Badge>
+                          <Tooltip label={node.message || node.version || ""}>
+                            <Text maxW="120px" isTruncated fontSize="xs" color="gray.500">
+                              {lastSeenLabel(node.last_seen_at)}
+                            </Text>
+                          </Tooltip>
+                        </VStack>
                       </Td>
                       <Td>
                         <Tooltip label={node.applied_config_hash || node.last_config_hash || ""}>
@@ -608,7 +650,7 @@ export const SingBoxPanel: FC = () => {
               <Divider />
 
               <Text fontSize="sm" fontWeight="medium">
-                User exit
+                User route
               </Text>
               <HStack align="flex-end">
                 <FormControl>
@@ -618,6 +660,23 @@ export const SingBoxPanel: FC = () => {
                     value={policyUsername}
                     onChange={(e) => setPolicyUsername(e.target.value)}
                   />
+                </FormControl>
+                <FormControl>
+                  <FormLabel fontSize="xs">Entry</FormLabel>
+                  <Select
+                    size="sm"
+                    value={policyEntryNodeId}
+                    onChange={(e) => setPolicyEntryNodeId(e.target.value)}
+                  >
+                    <option value="">Auto</option>
+                    {nodes
+                      .filter((node) => node.entry_enabled)
+                      .map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.name}
+                        </option>
+                      ))}
+                  </Select>
                 </FormControl>
                 <FormControl>
                   <FormLabel fontSize="xs">Exit</FormLabel>
@@ -668,11 +727,11 @@ export const SingBoxPanel: FC = () => {
                   <Divider />
                   <FormControl>
                     <FormLabel fontSize="xs">sing-box subscription</FormLabel>
-                    <Input size="sm" value={subscriptionLinks.singbox} isReadOnly />
+                    <Input size="sm" value={subscriptionUrl(subscriptionLinks.singbox)} isReadOnly />
                   </FormControl>
                   <FormControl>
                     <FormLabel fontSize="xs">Clash subscription</FormLabel>
-                    <Input size="sm" value={subscriptionLinks.clash} isReadOnly />
+                    <Input size="sm" value={subscriptionUrl(subscriptionLinks.clash)} isReadOnly />
                   </FormControl>
                 </>
               )}

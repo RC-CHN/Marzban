@@ -19,6 +19,25 @@ SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
 NODE_LINK_DIR="${NODE_LINK_DIR:-/etc/marzban-singbox/node-link}"
 PUBLIC_CERT_DIR="${PUBLIC_CERT_DIR:-/etc/marzban-singbox/certs}"
 DATA_DIR="${DATA_DIR:-/var/lib/marzban-singbox}"
+SYNC_ENV_PATH="${SYNC_ENV_PATH:-/etc/marzban-singbox/sync.env}"
+SYNC_STATE_PATH="${SYNC_STATE_PATH:-$DATA_DIR/sync-state.json}"
+SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
+SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-60}"
+COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
+NODE_DOCKER_IMAGE="${NODE_DOCKER_IMAGE:-ghcr.io/rc-chn/marzban:latest}"
+NODE_DOCKER_CONTAINER_NAME="${NODE_DOCKER_CONTAINER_NAME:-marzban-sing-box}"
+NODE_DOCKER_PROJECT_NAME="${NODE_DOCKER_PROJECT_NAME:-marzban-singbox-node}"
+NODE_DOCKER_NETWORK_MODE="${NODE_DOCKER_NETWORK_MODE:-host}"
+NODE_DOCKER_CONFIG_ROOT="${NODE_DOCKER_CONFIG_ROOT:-/etc/marzban-singbox}"
+NODE_DOCKER_DATA_ROOT="${NODE_DOCKER_DATA_ROOT:-$DATA_DIR}"
+NODE_DOCKER_CONFIG_SOURCE="${NODE_DOCKER_CONFIG_SOURCE:-$NODE_DOCKER_CONFIG_ROOT}"
+NODE_DOCKER_CONFIG_TARGET="${NODE_DOCKER_CONFIG_TARGET:-$NODE_DOCKER_CONFIG_ROOT}"
+NODE_DOCKER_DATA_SOURCE="${NODE_DOCKER_DATA_SOURCE:-$NODE_DOCKER_DATA_ROOT}"
+NODE_DOCKER_DATA_TARGET="${NODE_DOCKER_DATA_TARGET:-$NODE_DOCKER_DATA_ROOT}"
+NODE_DOCKER_SING_BOX_BIN="${NODE_DOCKER_SING_BOX_BIN:-/usr/local/bin/sing-box}"
+DOCKER_HTTP_PROXY="${DOCKER_HTTP_PROXY:-${HTTP_PROXY:-${http_proxy:-}}}"
+DOCKER_HTTPS_PROXY="${DOCKER_HTTPS_PROXY:-${HTTPS_PROXY:-${https_proxy:-}}}"
+DOCKER_NO_PROXY="${DOCKER_NO_PROXY:-${NO_PROXY:-${no_proxy:-localhost,127.0.0.1}}}"
 PANEL_DATA_DIR="${PANEL_DATA_DIR:-/var/lib/marzban}"
 PANEL_TLS_MODE="${PANEL_TLS_MODE:-self-signed}"
 PANEL_HOST="${PANEL_HOST:-}"
@@ -52,6 +71,18 @@ Optional:
   --panel-insecure             skip TLS verification when calling a self-signed panel
   --runtime systemd|docker     default: systemd
   --config-path PATH           default: /etc/marzban-singbox/config.json
+  --sync-interval SECONDS      default: 60
+
+Docker runtime environment:
+  NODE_DOCKER_IMAGE            default: ghcr.io/rc-chn/marzban:latest
+  NODE_DOCKER_NETWORK_MODE     default: host
+  NODE_DOCKER_CONFIG_SOURCE    default: /etc/marzban-singbox
+  NODE_DOCKER_CONFIG_TARGET    default: /etc/marzban-singbox
+  NODE_DOCKER_DATA_SOURCE      default: /var/lib/marzban-singbox
+  NODE_DOCKER_DATA_TARGET      default: /var/lib/marzban-singbox
+  DOCKER_HTTP_PROXY            default: HTTP_PROXY/http_proxy
+  DOCKER_HTTPS_PROXY           default: HTTPS_PROXY/https_proxy
+  DOCKER_NO_PROXY              default: NO_PROXY/no_proxy
 USAGE
 }
 
@@ -139,6 +170,10 @@ parse_args() {
         CONFIG_PATH="${2:-}"
         shift 2
         ;;
+      --sync-interval)
+        SYNC_INTERVAL_SECONDS="${2:-}"
+        shift 2
+        ;;
       --help|-h)
         usage
         exit 0
@@ -187,6 +222,7 @@ ensure_directories() {
   install -d -m 0755 "$DATA_DIR"
   install -d -m 0755 "$PUBLIC_CERT_DIR"
   install -d -m 0755 "$NODE_LINK_DIR"
+  install -d -m 0755 "$COMPOSE_DIR"
 }
 
 install_systemd_service() {
@@ -207,6 +243,109 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME"
+}
+
+docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+    return
+  fi
+  return 127
+}
+
+configure_docker_daemon_proxy() {
+  if [ -z "$DOCKER_HTTP_PROXY" ] && [ -z "$DOCKER_HTTPS_PROXY" ]; then
+    return
+  fi
+  if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+    log "docker daemon proxy env detected; systemd is not active, skipping daemon proxy drop-in"
+    return
+  fi
+
+  local proxy_dir proxy_file tmp_file
+  proxy_dir="/etc/systemd/system/docker.service.d"
+  proxy_file="$proxy_dir/http-proxy.conf"
+  install -d -m 0755 "$proxy_dir"
+  tmp_file="$(mktemp)"
+  {
+    printf '%s\n' "[Service]"
+    [ -z "$DOCKER_HTTP_PROXY" ] || printf 'Environment="HTTP_PROXY=%s"\n' "$DOCKER_HTTP_PROXY"
+    [ -z "$DOCKER_HTTPS_PROXY" ] || printf 'Environment="HTTPS_PROXY=%s"\n' "$DOCKER_HTTPS_PROXY"
+    [ -z "$DOCKER_NO_PROXY" ] || printf 'Environment="NO_PROXY=%s"\n' "$DOCKER_NO_PROXY"
+  } >"$tmp_file"
+  if [ -f "$proxy_file" ] && cmp -s "$tmp_file" "$proxy_file"; then
+    rm -f "$tmp_file"
+    return
+  fi
+  install -m 0644 "$tmp_file" "$proxy_file"
+  rm -f "$tmp_file"
+  systemctl daemon-reload
+  if systemctl is-active --quiet docker 2>/dev/null; then
+    systemctl restart docker
+  fi
+  log "docker daemon proxy configured: $proxy_file"
+}
+
+install_docker_runtime() {
+  configure_docker_daemon_proxy
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker_compose version >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! command -v docker >/dev/null 2>&1 || ! docker_compose version >/dev/null 2>&1; then
+    if ! command -v apt-get >/dev/null 2>&1; then
+      die "docker runtime requires docker and docker compose"
+    fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    if ! apt-get install -y --no-install-recommends docker.io docker-compose-plugin; then
+      apt-get install -y --no-install-recommends docker.io docker-compose
+    fi
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl enable --now docker
+  elif command -v service >/dev/null 2>&1; then
+    service docker start >/dev/null 2>&1 || true
+  fi
+
+  docker info >/dev/null 2>&1 || die "docker daemon is not available"
+  docker_compose version >/dev/null 2>&1 || die "docker compose is not available"
+}
+
+write_docker_compose() {
+  local compose_path
+  compose_path="$COMPOSE_DIR/docker-compose.yml"
+  install -d -m 0755 "$COMPOSE_DIR"
+  install -d -m 0755 "$NODE_DOCKER_CONFIG_SOURCE"
+  install -d -m 0755 "$NODE_DOCKER_DATA_SOURCE"
+  cat >"$compose_path" <<EOF
+services:
+  sing-box:
+    image: "$NODE_DOCKER_IMAGE"
+    container_name: "$NODE_DOCKER_CONTAINER_NAME"
+    restart: unless-stopped
+    network_mode: "$NODE_DOCKER_NETWORK_MODE"
+    volumes:
+      - "$NODE_DOCKER_CONFIG_SOURCE:$NODE_DOCKER_CONFIG_TARGET:rw"
+      - "$NODE_DOCKER_DATA_SOURCE:$NODE_DOCKER_DATA_TARGET:rw"
+    command:
+      - "$NODE_DOCKER_SING_BOX_BIN"
+      - "run"
+      - "-c"
+      - "$CONFIG_PATH"
+EOF
+  log "docker compose written: $compose_path"
+}
+
+start_docker_runtime() {
+  install_docker_runtime
+  write_docker_compose
+  (cd "$COMPOSE_DIR" && COMPOSE_PROJECT_NAME="$NODE_DOCKER_PROJECT_NAME" docker_compose up -d)
 }
 
 write_placeholder_config() {
@@ -487,6 +626,11 @@ check_ports() {
     log "port check skipped: $SERVICE_NAME is already active"
     return
   fi
+  if [ "$RUNTIME" = "docker" ] && command -v docker >/dev/null 2>&1 \
+    && docker ps --filter "name=$NODE_DOCKER_CONTAINER_NAME" --format '{{.Names}}' 2>/dev/null | grep -qx "$NODE_DOCKER_CONTAINER_NAME"; then
+    log "port check skipped: docker container $NODE_DOCKER_CONTAINER_NAME is already active"
+    return
+  fi
   check_public_ports_available
   NODE_LINK_PROTOCOL="$(normalize_node_link_protocol "$NODE_LINK_PROTOCOL")" \
     || die "--node-link-protocol must be anytls or hysteria2"
@@ -505,7 +649,7 @@ install_node() {
   if [ "$RUNTIME" = "systemd" ]; then
     install_systemd_service
   else
-    log "docker runtime selected; create compose/service outside this minimal bootstrap"
+    start_docker_runtime
   fi
   check_config
   log "node installed"
@@ -540,6 +684,281 @@ response_path() {
   local value
   value="$(jq -r "$jq_expr // empty" "$response_path")"
   printf '%s\n' "${value:-$default_path}"
+}
+
+write_env_var() {
+  local key="$1"
+  local value="$2"
+  printf '%s=%q\n' "$key" "$value"
+}
+
+write_sync_env() {
+  local sync_token="$1"
+  local config_hash="$2"
+  local tmp_path
+  [ -n "$sync_token" ] || die "panel did not return a node sync token"
+  install -d -m 0755 "$(dirname "$SYNC_ENV_PATH")"
+  install -d -m 0755 "$(dirname "$SYNC_STATE_PATH")"
+  tmp_path="$(mktemp)"
+  {
+    write_env_var PANEL_URL "${PANEL_URL%/}"
+    write_env_var PANEL_INSECURE "$PANEL_INSECURE"
+    write_env_var NODE_NAME "$NODE_NAME"
+    write_env_var NODE_HOST "$NODE_HOST"
+    write_env_var NODE_SYNC_TOKEN "$sync_token"
+    write_env_var CONFIG_PATH "$CONFIG_PATH"
+    write_env_var SING_BOX_BIN "$SING_BOX_BIN"
+    write_env_var RUNTIME "$RUNTIME"
+    write_env_var SERVICE_NAME "$SERVICE_NAME"
+    write_env_var COMPOSE_DIR "$COMPOSE_DIR"
+    write_env_var NODE_DOCKER_CONTAINER_NAME "$NODE_DOCKER_CONTAINER_NAME"
+    write_env_var NODE_DOCKER_PROJECT_NAME "$NODE_DOCKER_PROJECT_NAME"
+    write_env_var SYNC_STATE_PATH "$SYNC_STATE_PATH"
+    write_env_var SYNC_INTERVAL_SECONDS "$SYNC_INTERVAL_SECONDS"
+  } >"$tmp_path"
+  install -m 0600 "$tmp_path" "$SYNC_ENV_PATH"
+  rm -f "$tmp_path"
+  jq -n --arg config_hash "$config_hash" --arg synced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{config_hash: $config_hash, synced_at: $synced_at}' >"$SYNC_STATE_PATH"
+  chmod 0600 "$SYNC_STATE_PATH"
+}
+
+install_sync_agent() {
+  local tmp_path service_path timer_path
+  tmp_path="$(mktemp)"
+  cat >"$tmp_path" <<'SYNC_AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_PATH="${SYNC_ENV_PATH:-/etc/marzban-singbox/sync.env}"
+if [ ! -f "$ENV_PATH" ]; then
+  echo "[marzban-singbox-sync] missing env: $ENV_PATH" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$ENV_PATH"
+
+PANEL_URL="${PANEL_URL%/}"
+CONFIG_PATH="${CONFIG_PATH:-/etc/marzban-singbox/config.json}"
+SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
+SYNC_STATE_PATH="${SYNC_STATE_PATH:-/var/lib/marzban-singbox/sync-state.json}"
+COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
+SERVICE_NAME="${SERVICE_NAME:-marzban-sing-box}"
+NODE_DOCKER_CONTAINER_NAME="${NODE_DOCKER_CONTAINER_NAME:-marzban-sing-box}"
+
+log() {
+  printf '[marzban-singbox-sync] %s\n' "$*"
+}
+
+is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+curl_tls_args() {
+  if is_true "${PANEL_INSECURE:-false}"; then
+    printf '%s\n' "-fsSk"
+  else
+    printf '%s\n' "-fsS"
+  fi
+}
+
+current_config_hash() {
+  if [ -f "$SYNC_STATE_PATH" ]; then
+    jq -r '.config_hash // empty' "$SYNC_STATE_PATH" 2>/dev/null || true
+  fi
+}
+
+sing_box_version() {
+  "$SING_BOX_BIN" version 2>/dev/null | head -n 1 || true
+}
+
+container_image() {
+  if command -v docker >/dev/null 2>&1; then
+    docker ps --filter "name=$NODE_DOCKER_CONTAINER_NAME" --format '{{.Image}}' 2>/dev/null | head -n 1 || true
+  fi
+}
+
+node_link_listening() {
+  local port
+  if [ ! -f "$CONFIG_PATH" ] || ! command -v ss >/dev/null 2>&1; then
+    printf '%s\n' "false"
+    return
+  fi
+  port="$(jq -r '.inbounds[]? | select((.tag // "") | startswith("node-link")) | .listen_port' "$CONFIG_PATH" 2>/dev/null | head -n 1)"
+  if [ -n "$port" ] && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
+    printf '%s\n' "true"
+  else
+    printf '%s\n' "false"
+  fi
+}
+
+write_state() {
+  local hash="$1"
+  install -d -m 0755 "$(dirname "$SYNC_STATE_PATH")"
+  jq -n --arg config_hash "$hash" --arg synced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{config_hash: $config_hash, synced_at: $synced_at}' >"$SYNC_STATE_PATH"
+  chmod 0600 "$SYNC_STATE_PATH"
+}
+
+report_applied() {
+  local hash="$1"
+  local success="$2"
+  local message="$3"
+  jq -n \
+    --arg token "$NODE_SYNC_TOKEN" \
+    --arg config_hash "$hash" \
+    --argjson success "$success" \
+    --arg sing_box_version "$(sing_box_version)" \
+    --arg runtime "${RUNTIME:-}" \
+    --arg container_image "$(container_image)" \
+    --arg message "$message" \
+    '{
+      token: $token,
+      config_hash: $config_hash,
+      success: $success,
+      sing_box_version: $sing_box_version,
+      runtime: $runtime,
+      container_image: $container_image,
+      message: $message
+    }' |
+    curl "$(curl_tls_args)" \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+      "$PANEL_URL/api/singbox/nodes/sync/applied" >/dev/null
+}
+
+restart_runtime() {
+  if [ -n "${SYNC_RESTART_COMMAND:-}" ]; then
+    sh -c "$SYNC_RESTART_COMMAND"
+    return
+  fi
+  if [ -f "$COMPOSE_DIR/docker-compose.yml" ] && command -v docker >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then
+      (cd "$COMPOSE_DIR" && COMPOSE_PROJECT_NAME="${NODE_DOCKER_PROJECT_NAME:-marzban-singbox-node}" docker compose restart)
+      return
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then
+      (cd "$COMPOSE_DIR" && COMPOSE_PROJECT_NAME="${NODE_DOCKER_PROJECT_NAME:-marzban-singbox-node}" docker-compose restart)
+      return
+    fi
+    log "docker compose restart skipped: docker compose is not available"
+    return
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl restart "$SERVICE_NAME"
+    return
+  fi
+  log "restart skipped: no docker compose or systemd runtime found"
+}
+
+main() {
+  local response changed hash next_path previous_path check_output restart_output current_hash
+  response="$(mktemp)"
+  trap 'rm -f "${response:-}"' EXIT
+  current_hash="$(current_config_hash)"
+  jq -n \
+    --arg token "$NODE_SYNC_TOKEN" \
+    --arg node_name "${NODE_NAME:-}" \
+    --arg current_config_hash "$current_hash" \
+    --arg sing_box_version "$(sing_box_version)" \
+    --arg runtime "${RUNTIME:-}" \
+    --arg container_image "$(container_image)" \
+    --argjson node_link_listening "$(node_link_listening)" \
+    --arg message "heartbeat" \
+    '{
+      token: $token,
+      node_name: $node_name,
+      current_config_hash: $current_config_hash,
+      sing_box_version: $sing_box_version,
+      runtime: $runtime,
+      container_image: $container_image,
+      node_link_listening: $node_link_listening,
+      message: $message
+    }' |
+    curl "$(curl_tls_args)" \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+      "$PANEL_URL/api/singbox/nodes/sync" \
+      -o "$response"
+
+  changed="$(jq -r '.changed' "$response")"
+  hash="$(jq -r '.config_hash' "$response")"
+  if [ "$changed" != "true" ]; then
+    write_state "$hash"
+    log "config already current: $hash"
+    return
+  fi
+
+  next_path="${CONFIG_PATH}.next"
+  previous_path="${CONFIG_PATH}.prev"
+  install -d -m 0755 "$(dirname "$CONFIG_PATH")"
+  jq '.config' "$response" >"$next_path"
+  if ! check_output="$("$SING_BOX_BIN" check -c "$next_path" 2>&1)"; then
+    rm -f "$next_path"
+    report_applied "$hash" false "$check_output"
+    printf '%s\n' "$check_output" >&2
+    exit 1
+  fi
+  if [ -f "$CONFIG_PATH" ]; then
+    cp "$CONFIG_PATH" "$previous_path"
+  fi
+  mv "$next_path" "$CONFIG_PATH"
+  chmod 0644 "$CONFIG_PATH"
+  if ! restart_output="$(restart_runtime 2>&1)"; then
+    report_applied "$hash" false "$restart_output"
+    printf '%s\n' "$restart_output" >&2
+    exit 1
+  fi
+  write_state "$hash"
+  report_applied "$hash" true "${restart_output:-applied}"
+  log "applied config: $hash"
+}
+
+main "$@"
+SYNC_AGENT
+  install -m 0755 "$tmp_path" "$SYNC_SCRIPT_PATH"
+  rm -f "$tmp_path"
+
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    service_path="/etc/systemd/system/marzban-singbox-sync.service"
+    timer_path="/etc/systemd/system/marzban-singbox-sync.timer"
+    cat >"$service_path" <<EOF
+[Unit]
+Description=Marzban sing-box node config sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=SYNC_ENV_PATH=$SYNC_ENV_PATH
+ExecStart=$SYNC_SCRIPT_PATH
+EOF
+    cat >"$timer_path" <<EOF
+[Unit]
+Description=Run Marzban sing-box node config sync periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=${SYNC_INTERVAL_SECONDS}s
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now marzban-singbox-sync.timer
+    log "sync timer enabled: every ${SYNC_INTERVAL_SECONDS}s"
+  else
+    log "sync timer skipped: systemd is not active"
+  fi
 }
 
 generate_csr() {
@@ -600,7 +1019,7 @@ enroll_node() {
     -o "$response_path"
 
   local node_link_ca_path node_cert_path node_key_path client_cert_path client_key_path
-  local public_cert_path public_key_path public_ca_path config_next
+  local public_cert_path public_key_path public_ca_path config_next sync_token config_hash
   node_link_ca_path="$(response_path "$response_path" '.paths.node_link_ca_cert_path' "$NODE_LINK_DIR/ca.crt")"
   node_cert_path="$(response_path "$response_path" '.paths.node_link_cert_path' "$NODE_LINK_DIR/node.crt")"
   node_key_path="$(response_path "$response_path" '.paths.node_link_key_path' "$NODE_LINK_DIR/node.key")"
@@ -629,16 +1048,20 @@ enroll_node() {
   fi
   mv "$config_next" "$CONFIG_PATH"
   chmod 0644 "$CONFIG_PATH"
+  sync_token="$(response_path "$response_path" '.sync_token' '')"
+  config_hash="$(jq -r '.config_hash' "$response_path" 2>/dev/null || true)"
+  write_sync_env "$sync_token" "$config_hash"
+  install_sync_agent
 
   if [ "$RUNTIME" = "systemd" ]; then
     install_systemd_service
     systemctl restart "$SERVICE_NAME"
   else
-    log "docker runtime selected; config and certs were written but service restart is external"
+    start_docker_runtime
   fi
 
   log "node enrolled"
-  log "config hash: $(jq -r '.config_hash' "$response_path" 2>/dev/null || true)"
+  log "config hash: $config_hash"
   rm -rf "$tmp_dir"
   trap - EXIT
 }
@@ -774,13 +1197,20 @@ status() {
   if command -v systemctl >/dev/null 2>&1; then
     log "service: $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
   fi
+  if [ "$RUNTIME" = "docker" ] && command -v docker >/dev/null 2>&1; then
+    log "container: $(docker ps --filter "name=$NODE_DOCKER_CONTAINER_NAME" --format '{{.Status}}' 2>/dev/null | head -n 1 || true)"
+  fi
   check_ports
 }
 
 restart() {
   need_root
   check_config
-  if command -v systemctl >/dev/null 2>&1; then
+  if [ "$RUNTIME" = "docker" ]; then
+    install_docker_runtime
+    write_docker_compose
+    (cd "$COMPOSE_DIR" && COMPOSE_PROJECT_NAME="$NODE_DOCKER_PROJECT_NAME" docker_compose up -d)
+  elif command -v systemctl >/dev/null 2>&1; then
     systemctl restart "$SERVICE_NAME"
   else
     die "systemctl not available"
@@ -788,7 +1218,9 @@ restart() {
 }
 
 logs() {
-  if command -v journalctl >/dev/null 2>&1; then
+  if [ "$RUNTIME" = "docker" ] && command -v docker >/dev/null 2>&1; then
+    docker logs --tail 200 "$NODE_DOCKER_CONTAINER_NAME"
+  elif command -v journalctl >/dev/null 2>&1; then
     journalctl -u "$SERVICE_NAME" -n 200 --no-pager
   else
     die "journalctl not available"

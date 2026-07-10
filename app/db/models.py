@@ -373,6 +373,7 @@ class SingBoxNode(Base):
     status = Column(Enum(NodeStatus), nullable=False, default=NodeStatus.connecting)
     version = Column(String(32), nullable=True)
     message = Column(String(1024), nullable=True)
+    sync_token_hash = Column(String(64), nullable=True, unique=True)
     last_config_hash = Column(String(64), nullable=True)
     applied_config_hash = Column(String(64), nullable=True)
     last_seen_at = Column(DateTime, nullable=True)
@@ -394,6 +395,10 @@ class SingBoxNode(Base):
     )
     usages = relationship("SingBoxNodeUsage", back_populates="node", cascade="all, delete-orphan")
     enrollments = relationship("SingBoxEnrollmentToken", back_populates="node", cascade="all, delete-orphan")
+
+    @property
+    def sync_enabled(self) -> bool:
+        return bool(self.sync_token_hash)
 
 
 class SingBoxEnrollmentToken(Base):
@@ -437,6 +442,7 @@ class SingBoxUserCredential(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    subscription_token = Column(String(96), nullable=True, unique=True)
     password = Column(String(256), nullable=False)
     vmess_uuid = Column(String(36), nullable=False)
     vless_uuid = Column(String(36), nullable=False)

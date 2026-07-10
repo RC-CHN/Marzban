@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -35,6 +36,11 @@ from app.models.singbox import (
     SingBoxNodeLinkResponse,
     SingBoxNodeModify,
     SingBoxNodeResponse,
+    SingBoxNodeSyncAppliedRequest,
+    SingBoxNodeSyncAppliedResponse,
+    SingBoxNodeSyncRequest,
+    SingBoxNodeSyncResponse,
+    SingBoxSubscriptionLinks,
     SingBoxUsageRecord,
     SingBoxUsageReport,
     SingBoxUserCreate,
@@ -42,6 +48,7 @@ from app.models.singbox import (
     SingBoxUserPolicyResponse,
 )
 from app.models.user import UserStatus
+from app.models.node import NodeStatus
 from app.utils import responses
 from config import (
     SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY,
@@ -60,6 +67,27 @@ class ExitPolicyRequest(BaseModel):
     entry_node: str = "node-a"
     auth_user: str = "u1"
     exit_node: str | None = None
+
+
+def _public_subscription_links(token: str) -> SingBoxSubscriptionLinks:
+    base = f"/api/singbox/public-subscription/{token}"
+    return SingBoxSubscriptionLinks(
+        token=token,
+        singbox=f"{base}/sing-box",
+        clash=f"{base}/clash",
+    )
+
+
+def _user_policy_response(user: User, credential) -> SingBoxUserPolicyResponse:
+    return SingBoxUserPolicyResponse(
+        username=user.username,
+        enabled_protocols=credential.enabled_protocols,
+        exit_node_id=credential.exit_node_id,
+        has_credentials=True,
+        public_subscription=_public_subscription_links(credential.subscription_token)
+        if credential.subscription_token
+        else None,
+    )
 
 
 def _node_public_port_spec(node) -> str:
@@ -81,6 +109,12 @@ def _node_public_port_spec(node) -> str:
     return ",".join(parts)
 
 
+def _node_heartbeat_stale(node, now: datetime | None = None) -> bool:
+    if not node.last_seen_at:
+        return True
+    return (now or datetime.utcnow()) - node.last_seen_at > timedelta(minutes=3)
+
+
 @router.get("/bootstrap.sh", response_class=PlainTextResponse, include_in_schema=False)
 def get_bootstrap_script():
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "singbox-bootstrap.sh"
@@ -93,6 +127,7 @@ def get_status(
     _: Admin = Depends(Admin.check_sudo_admin),
 ):
     nodes = production.get_nodes(db)
+    now = datetime.utcnow()
     public_tls_modes = sorted({node.public_tls_mode or "system-ca" for node in nodes})
     return {
         "runtime": "sing-box",
@@ -117,6 +152,9 @@ def get_status(
                 "exit_enabled": node.exit_enabled,
                 "last_config_hash": node.last_config_hash,
                 "applied_config_hash": node.applied_config_hash,
+                "sync_enabled": bool(node.sync_token_hash),
+                "sync_pending": bool(node.last_config_hash and node.last_config_hash != node.applied_config_hash),
+                "heartbeat_stale": _node_heartbeat_stale(node, now),
                 "last_seen_at": node.last_seen_at,
             }
             for node in nodes
@@ -180,6 +218,7 @@ def enroll_node(
             public_csr=payload.public_csr,
         )
         config, hash_value = production.build_node_config(db, node.id)
+        sync_token = production.issue_node_sync_token(db, node)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -190,6 +229,7 @@ def enroll_node(
         node_id=node.id,
         node_name=node.name,
         config_hash=hash_value,
+        sync_token=sync_token,
         expires_at=issued.expires_at,
         paths={
             "config_path": node.config_path,
@@ -210,6 +250,79 @@ def enroll_node(
             "public.crt": issued.public_certificate,
         },
         config=config,
+    )
+
+
+@router.post("/nodes/sync", response_model=SingBoxNodeSyncResponse, responses={403: responses._403})
+def sync_node_config(
+    payload: SingBoxNodeSyncRequest,
+    db: Session = Depends(get_db),
+):
+    node = production.get_node_by_sync_token(db, payload.token)
+    if node is None:
+        raise HTTPException(status_code=403, detail="Invalid node sync token")
+    if payload.node_name and payload.node_name != node.name:
+        raise HTTPException(status_code=400, detail="Node sync token does not match this node")
+    try:
+        config, hash_value = production.build_node_config(db, node.id)
+    except (RuntimeError, ValueError) as exc:
+        production.update_node_heartbeat(
+            db,
+            node,
+            desired_hash=node.last_config_hash or "",
+            status=NodeStatus.error,
+            version=payload.sing_box_version,
+            message=str(exc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    changed = payload.current_config_hash != hash_value
+    production.update_node_heartbeat(
+        db,
+        node,
+        desired_hash=hash_value,
+        applied_hash=hash_value if not changed else None,
+        status=NodeStatus.connected,
+        version=payload.sing_box_version,
+        message=payload.message,
+    )
+    return SingBoxNodeSyncResponse(
+        node_id=node.id,
+        node_name=node.name,
+        config_hash=hash_value,
+        changed=changed,
+        config=config if changed else None,
+    )
+
+
+@router.post(
+    "/nodes/sync/applied",
+    response_model=SingBoxNodeSyncAppliedResponse,
+    responses={403: responses._403},
+)
+def report_node_sync_applied(
+    payload: SingBoxNodeSyncAppliedRequest,
+    db: Session = Depends(get_db),
+):
+    node = production.get_node_by_sync_token(db, payload.token)
+    if node is None:
+        raise HTTPException(status_code=403, detail="Invalid node sync token")
+    status = NodeStatus.connected if payload.success else NodeStatus.error
+    production.update_node_heartbeat(
+        db,
+        node,
+        desired_hash=payload.config_hash,
+        applied_hash=payload.config_hash if payload.success else None,
+        status=status,
+        version=payload.sing_box_version,
+        message=payload.message,
+    )
+    return SingBoxNodeSyncAppliedResponse(
+        node_id=node.id,
+        node_name=node.name,
+        status=status,
+        config_hash=payload.config_hash,
+        applied_config_hash=node.applied_config_hash,
     )
 
 
@@ -423,12 +536,7 @@ def get_user_policy(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     credential = production.ensure_user_credentials(db, user)
-    return SingBoxUserPolicyResponse(
-        username=user.username,
-        enabled_protocols=credential.enabled_protocols,
-        exit_node_id=credential.exit_node_id,
-        has_credentials=True,
-    )
+    return _user_policy_response(user, credential)
 
 
 @router.post("/users", response_model=SingBoxUserPolicyResponse)
@@ -456,12 +564,7 @@ def create_singbox_user(
         enabled_protocols=payload.enabled_protocols,
         exit_node_id=payload.exit_node_id,
     )
-    return SingBoxUserPolicyResponse(
-        username=user.username,
-        enabled_protocols=credential.enabled_protocols,
-        exit_node_id=credential.exit_node_id,
-        has_credentials=True,
-    )
+    return _user_policy_response(user, credential)
 
 
 @router.put("/users/{username}/policy", response_model=SingBoxUserPolicyResponse)
@@ -487,12 +590,7 @@ def update_user_policy(
         if "exit_node_id" in payload.model_fields_set
         else current.exit_node_id,
     )
-    return SingBoxUserPolicyResponse(
-        username=user.username,
-        enabled_protocols=credential.enabled_protocols,
-        exit_node_id=credential.exit_node_id,
-        has_credentials=True,
-    )
+    return _user_policy_response(user, credential)
 
 
 @router.get("/subscription/{username}/sing-box")
@@ -524,6 +622,36 @@ def get_admin_clash_subscription(
         raise HTTPException(status_code=404, detail="User not found")
     try:
         return production.build_user_subscription(db, user, entry_node_id, "clash")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/public-subscription/{token}/sing-box")
+def get_public_singbox_subscription(
+    token: str,
+    entry_node_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    credential = production.get_user_credential_by_subscription_token(db, token)
+    if not credential or not credential.user:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    try:
+        return production.build_user_subscription(db, credential.user, entry_node_id, "sing-box")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/public-subscription/{token}/clash", response_class=PlainTextResponse)
+def get_public_clash_subscription(
+    token: str,
+    entry_node_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    credential = production.get_user_credential_by_subscription_token(db, token)
+    if not credential or not credential.user:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    try:
+        return production.build_user_subscription(db, credential.user, entry_node_id, "clash")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

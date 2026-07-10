@@ -102,6 +102,7 @@ class SingBoxNodeResponse(SingBoxNodeBase):
     status: NodeStatus
     version: str | None = None
     message: str | None = None
+    sync_enabled: bool | None = None
     last_config_hash: str | None = None
     applied_config_hash: str | None = None
     last_seen_at: datetime | None = None
@@ -136,11 +137,18 @@ class SingBoxUserCreate(BaseModel):
     expire: int | None = 0
 
 
+class SingBoxSubscriptionLinks(BaseModel):
+    token: str
+    singbox: str
+    clash: str
+
+
 class SingBoxUserPolicyResponse(BaseModel):
     username: str
     enabled_protocols: list[SingBoxProtocol]
     exit_node_id: int | None = None
     has_credentials: bool = True
+    public_subscription: SingBoxSubscriptionLinks | None = None
 
 
 class SingBoxDeploymentRequest(BaseModel):
@@ -184,10 +192,49 @@ class SingBoxNodeEnrollResponse(BaseModel):
     node_id: int
     node_name: str
     config_hash: str
+    sync_token: str
     expires_at: datetime
     paths: dict[str, str | None]
     files: dict[str, str]
     config: dict
+
+
+class SingBoxNodeSyncRequest(BaseModel):
+    token: str = Field(min_length=16)
+    node_name: str | None = None
+    current_config_hash: str | None = None
+    sing_box_version: str | None = Field(default=None, max_length=64)
+    runtime: str | None = Field(default=None, max_length=64)
+    container_image: str | None = Field(default=None, max_length=256)
+    node_link_listening: bool | None = None
+    message: str | None = Field(default=None, max_length=512)
+
+
+class SingBoxNodeSyncResponse(BaseModel):
+    node_id: int
+    node_name: str
+    config_hash: str
+    changed: bool
+    sync_interval_seconds: int = 60
+    config: dict | None = None
+
+
+class SingBoxNodeSyncAppliedRequest(BaseModel):
+    token: str = Field(min_length=16)
+    config_hash: str = Field(min_length=64, max_length=64)
+    success: bool = True
+    sing_box_version: str | None = Field(default=None, max_length=64)
+    runtime: str | None = Field(default=None, max_length=64)
+    container_image: str | None = Field(default=None, max_length=256)
+    message: str | None = Field(default=None, max_length=512)
+
+
+class SingBoxNodeSyncAppliedResponse(BaseModel):
+    node_id: int
+    node_name: str
+    status: NodeStatus
+    config_hash: str
+    applied_config_hash: str | None = None
 
 
 class SingBoxUsageRecord(BaseModel):

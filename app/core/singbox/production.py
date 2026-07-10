@@ -66,6 +66,23 @@ def get_node_by_name(db: Session, name: str) -> DBSingBoxNode | None:
     return db.query(DBSingBoxNode).filter(DBSingBoxNode.name == name).first()
 
 
+def issue_node_sync_token(db: Session, node: DBSingBoxNode) -> str:
+    token = secrets.token_urlsafe(32)
+    node.sync_token_hash = _token_hash(token)
+    node.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(node)
+    return token
+
+
+def get_node_by_sync_token(db: Session, token: str) -> DBSingBoxNode | None:
+    return (
+        db.query(DBSingBoxNode)
+        .filter(DBSingBoxNode.sync_token_hash == _token_hash(token))
+        .first()
+    )
+
+
 def create_node(db: Session, payload: SingBoxNodeCreate) -> DBSingBoxNode:
     dbnode = DBSingBoxNode(
         name=payload.name,
@@ -211,10 +228,17 @@ def rotate_node_links(db: Session) -> list[SingBoxNodeLink]:
 
 def ensure_user_credentials(db: Session, user: User) -> SingBoxUserCredential:
     if user.singbox_credentials:
-        return user.singbox_credentials
+        credential = user.singbox_credentials
+        if not credential.subscription_token:
+            credential.subscription_token = _subscription_token(db)
+            credential.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(credential)
+        return credential
 
     credential = SingBoxUserCredential(
         user=user,
+        subscription_token=_subscription_token(db),
         password=_secret(24),
         vmess_uuid=str(uuid.uuid4()),
         vless_uuid=str(uuid.uuid4()),
@@ -226,6 +250,21 @@ def ensure_user_credentials(db: Session, user: User) -> SingBoxUserCredential:
     db.commit()
     db.refresh(credential)
     return credential
+
+
+def get_user_credential_by_subscription_token(
+    db: Session,
+    token: str,
+) -> SingBoxUserCredential | None:
+    return (
+        db.query(SingBoxUserCredential)
+        .join(User)
+        .filter(
+            SingBoxUserCredential.subscription_token == token,
+            User.status == UserStatus.active,
+        )
+        .first()
+    )
 
 
 def update_user_policy(
@@ -344,6 +383,28 @@ def update_node_config_hash(db: Session, node: DBSingBoxNode, hash_value: str, a
         node.applied_config_hash = hash_value
         node.status = NodeStatus.connected
         node.last_seen_at = datetime.utcnow()
+    node.updated_at = datetime.utcnow()
+    db.commit()
+
+
+def update_node_heartbeat(
+    db: Session,
+    node: DBSingBoxNode,
+    *,
+    desired_hash: str,
+    applied_hash: str | None = None,
+    status: NodeStatus = NodeStatus.connected,
+    version: str | None = None,
+    message: str | None = None,
+) -> None:
+    node.last_config_hash = desired_hash
+    if applied_hash:
+        node.applied_config_hash = applied_hash
+    node.status = status
+    if version:
+        node.version = version[:32]
+    node.message = (message or "")[:1024] or None
+    node.last_seen_at = datetime.utcnow()
     node.updated_at = datetime.utcnow()
     db.commit()
 
@@ -535,6 +596,19 @@ def _secret(length: int) -> str:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _subscription_token(db: Session) -> str:
+    for _ in range(8):
+        token = secrets.token_urlsafe(32)
+        exists = (
+            db.query(SingBoxUserCredential.id)
+            .filter(SingBoxUserCredential.subscription_token == token)
+            .first()
+        )
+        if not exists:
+            return token
+    raise RuntimeError("Unable to generate a unique subscription token")
 
 
 def _base64_secret(length: int) -> str:
