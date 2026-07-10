@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.singbox.config import (
     SUPPORTED_PROTOCOLS,
+    SUPPORTED_NODE_LINK_PROTOCOLS,
     NodeLink,
     Protocol,
     ProtocolPorts,
@@ -42,6 +43,7 @@ from config import (
     SINGBOX_NODE_LINK_CLIENT_KEY_PATH,
     SINGBOX_NODE_LINK_KEY_PATH,
     SINGBOX_NODE_LINK_MTLS,
+    SINGBOX_NODE_LINK_PROTOCOL,
     SINGBOX_NODE_LINK_PORT,
     SINGBOX_SHADOWSOCKS_METHOD,
     SINGBOX_SHADOWSOCKS_SERVER_PASSWORD,
@@ -160,6 +162,7 @@ def consume_enrollment(db: Session, enrollment: SingBoxEnrollmentToken) -> None:
 
 def rebuild_full_mesh_links(db: Session) -> list[SingBoxNodeLink]:
     nodes = get_nodes(db)
+    protocol = _node_link_protocol()
     existing = {
         (link.from_node_id, link.to_node_id): link
         for link in db.query(SingBoxNodeLink).all()
@@ -172,11 +175,14 @@ def rebuild_full_mesh_links(db: Session) -> list[SingBoxNodeLink]:
             pair = (from_node.id, to_node.id)
             valid_pairs.add(pair)
             if pair in existing:
+                existing[pair].protocol = protocol
+                existing[pair].mtls_enabled = from_node.node_link_mtls_enabled and to_node.node_link_mtls_enabled
                 continue
             db.add(
                 SingBoxNodeLink(
                     from_node_id=from_node.id,
                     to_node_id=to_node.id,
+                    protocol=protocol,
                     auth_name=f"link-{from_node.name}",
                     password=_secret(32),
                     mtls_enabled=from_node.node_link_mtls_enabled and to_node.node_link_mtls_enabled,
@@ -433,8 +439,19 @@ def _builder_link(link: SingBoxNodeLink) -> NodeLink:
         to_node=link.to_node.name,
         auth_name=link.auth_name,
         password=link.password,
+        protocol=_node_link_protocol(link.protocol),
         enabled=link.enabled,
     )
+
+
+def _node_link_protocol(value: str | None = None) -> str:
+    protocol = (value or SINGBOX_NODE_LINK_PROTOCOL or "anytls").lower()
+    if protocol not in SUPPORTED_NODE_LINK_PROTOCOLS:
+        raise ValueError(
+            "Unsupported SINGBOX_NODE_LINK_PROTOCOL: "
+            f"{protocol}. Supported values: {', '.join(SUPPORTED_NODE_LINK_PROTOCOLS)}"
+        )
+    return protocol
 
 
 def _builder_user(credential: SingBoxUserCredential) -> SingBoxUser:

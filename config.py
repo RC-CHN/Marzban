@@ -35,7 +35,7 @@ SINGBOX_TLS_CERT_PATH = config("SINGBOX_TLS_CERT_PATH", default="/etc/marzban-si
 SINGBOX_TLS_KEY_PATH = config("SINGBOX_TLS_KEY_PATH", default="/etc/marzban-singbox/certs/privkey.pem")
 SINGBOX_PUBLIC_TLS_CA_CERT_PATH = config("SINGBOX_PUBLIC_TLS_CA_CERT_PATH", default="")
 SINGBOX_TLS_INSECURE = config("SINGBOX_TLS_INSECURE", default=False, cast=bool)
-SINGBOX_NODE_LINK_PROTOCOL = config("SINGBOX_NODE_LINK_PROTOCOL", default="hysteria2")
+SINGBOX_NODE_LINK_PROTOCOL = config("SINGBOX_NODE_LINK_PROTOCOL", default="anytls")
 SINGBOX_NODE_LINK_PORT = config("SINGBOX_NODE_LINK_PORT", default=12443, cast=int)
 SINGBOX_NODE_LINK_CA_DIR = config("SINGBOX_NODE_LINK_CA_DIR", default="/var/lib/marzban/ca/node-link")
 SINGBOX_NODE_LINK_CA_CERT_PATH = config(

@@ -129,6 +129,47 @@ class SingBoxConfigBuilderTest(unittest.TestCase):
         self.assertEqual(exit_tls["client_certificate_path"], "/etc/sing-box/node-link/client.crt")
         self.assertEqual(exit_tls["client_key_path"], "/etc/sing-box/node-link/client.key")
 
+    def test_anytls_node_link_uses_tcp_transport_with_mtls(self):
+        nodes = {
+            "node-a": SingBoxNode(name="node-a", public_host="node-a.example"),
+            "node-b": SingBoxNode(name="node-b", public_host="node-b.example"),
+        }
+        builder = SingBoxConfigBuilder(
+            nodes=nodes,
+            users=[self._user()],
+            route_policies=[RoutePolicy(entry_node="node-a", auth_name="u1", exit_node="node-b")],
+            node_links=[
+                NodeLink(
+                    from_node="node-a",
+                    to_node="node-b",
+                    auth_name="link-a",
+                    password="link-secret",
+                    protocol="anytls",
+                )
+            ],
+            node_link_tls=TLSSettings(
+                certificate_path="/etc/sing-box/node-link/node.crt",
+                key_path="/etc/sing-box/node-link/node.key",
+                client_insecure=False,
+                ca_certificate_path="/etc/sing-box/node-link/ca.crt",
+                client_certificate_path="/etc/sing-box/node-link/client.crt",
+                client_key_path="/etc/sing-box/node-link/client.key",
+                server_client_authentication="require-and-verify",
+                server_client_certificate_path="/etc/sing-box/node-link/ca.crt",
+            ),
+        )
+
+        entry_config = builder.build_node_config("node-a")
+        exit_config = builder.build_node_config("node-b")
+        entry_outbounds = {outbound["tag"]: outbound for outbound in entry_config["outbounds"]}
+        exit_inbounds = {inbound["tag"]: inbound for inbound in exit_config["inbounds"]}
+
+        self.assertEqual(entry_outbounds["exit-node-b"]["type"], "anytls")
+        self.assertNotIn("insecure", entry_outbounds["exit-node-b"]["tls"])
+        self.assertEqual(entry_outbounds["exit-node-b"]["tls"]["client_key_path"], "/etc/sing-box/node-link/client.key")
+        self.assertEqual(exit_inbounds["node-link-anytls"]["type"], "anytls")
+        self.assertEqual(exit_inbounds["node-link-anytls"]["tls"]["client_authentication"], "require-and-verify")
+
     def test_subscriptions_include_each_enabled_protocol(self):
         builder = self._builder()
         user = self._user()

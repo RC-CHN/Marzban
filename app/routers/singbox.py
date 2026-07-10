@@ -46,6 +46,7 @@ from app.utils import responses
 from config import (
     SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY,
     SINGBOX_NODE_LINK_MTLS,
+    SINGBOX_NODE_LINK_PROTOCOL,
 )
 
 router = APIRouter(
@@ -103,6 +104,7 @@ def get_status(
         },
         "node_link_tls": {
             "mode": "internal-ca",
+            "protocol": SINGBOX_NODE_LINK_PROTOCOL,
             "address_mode": "ip-or-domain",
             "mtls": SINGBOX_NODE_LINK_MTLS,
         },
@@ -262,6 +264,7 @@ def create_node_enrollment(
         f"curl {curl_flags} {q(bootstrap_url)} | sudo bash -s -- enroll-node "
         f"--panel-url {q(base_url)} --enroll-token {q(token)} "
         f"--node-name {q(node.name)} --node-host {q(node.public_host)} "
+        f"--node-link-protocol {q(SINGBOX_NODE_LINK_PROTOCOL)} "
         f"--node-link-port {q(str(node.node_link_port))} "
         f"--public-ports {q(_node_public_port_spec(node))}"
         f"{panel_tls_arg}"

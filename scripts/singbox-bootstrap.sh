@@ -8,6 +8,7 @@ NODE_NAME="${NODE_NAME:-}"
 NODE_HOST="${NODE_HOST:-}"
 PANEL_URL="${PANEL_URL:-}"
 ENROLL_TOKEN="${ENROLL_TOKEN:-}"
+NODE_LINK_PROTOCOL="${NODE_LINK_PROTOCOL:-anytls}"
 NODE_LINK_PORT="${NODE_LINK_PORT:-12443}"
 DEFAULT_PUBLIC_PORTS="11001/udp,11002/udp,11003/tcp,11004/tcp,11005/tcp,11006/tcp,11007/tcp,11007/udp"
 PUBLIC_PORTS="${PUBLIC_PORTS:-$DEFAULT_PUBLIC_PORTS}"
@@ -42,6 +43,7 @@ Usage:
 Optional:
   --sing-box-version VERSION   default: 1.13.14
   --sing-box-binary PATH       install an existing local sing-box binary instead of downloading
+  --node-link-protocol PROTO   anytls|hysteria2, default: anytls
   --node-link-port PORT        default: 12443
   --public-ports PORTS         comma-separated PORT/PROTO list; use "none" to skip public entry ports
   --skip-port-check            skip local listening-port preflight
@@ -99,6 +101,10 @@ parse_args() {
         ;;
       --sing-box-binary)
         SING_BOX_BINARY_PATH="${2:-}"
+        shift 2
+        ;;
+      --node-link-protocol)
+        NODE_LINK_PROTOCOL="${2:-}"
         shift 2
         ;;
       --node-link-port)
@@ -333,6 +339,31 @@ normalize_proto() {
   esac
 }
 
+normalize_node_link_protocol() {
+  case "${1:-}" in
+    anytls|ANYTLS)
+      printf '%s\n' "anytls"
+      ;;
+    hysteria2|HYSTERIA2)
+      printf '%s\n' "hysteria2"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+node_link_transport_proto() {
+  case "$(normalize_node_link_protocol "$NODE_LINK_PROTOCOL")" in
+    anytls)
+      printf '%s\n' "tcp"
+      ;;
+    hysteria2)
+      printf '%s\n' "udp"
+      ;;
+  esac
+}
+
 is_ip_address() {
   local value="$1"
   case "$value" in
@@ -457,7 +488,9 @@ check_ports() {
     return
   fi
   check_public_ports_available
-  check_port_available "node-link" "$NODE_LINK_PORT" "udp"
+  NODE_LINK_PROTOCOL="$(normalize_node_link_protocol "$NODE_LINK_PROTOCOL")" \
+    || die "--node-link-protocol must be anytls or hysteria2"
+  check_port_available "node-link" "$NODE_LINK_PORT" "$(node_link_transport_proto)"
 }
 
 install_node() {

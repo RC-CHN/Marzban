@@ -86,6 +86,7 @@ type SingBoxStatus = {
   };
   node_link_tls: {
     mode: "internal-ca";
+    protocol: "anytls" | "hysteria2";
     address_mode: "ip-or-domain";
     mtls: boolean;
   };
@@ -343,7 +344,7 @@ export const SingBoxPanel: FC = () => {
                   {publicTlsLabel}
                 </Badge>
                 <Badge colorScheme={status.node_link_tls.mtls ? "green" : "blue"}>
-                  {status.node_link_tls.mtls ? "link mTLS" : "link CA"}
+                  {status.node_link_tls.protocol} {status.node_link_tls.mtls ? "mTLS" : "CA"}
                 </Badge>
               </>
             )}
@@ -443,7 +444,9 @@ export const SingBoxPanel: FC = () => {
                         />
                       </Td>
                       <Td>
-                        <Tooltip label={`node-link:${node.node_link_port}, ${publicPortSummary(node)}`}>
+                        <Tooltip
+                          label={`node-link:${status?.node_link_tls.protocol || "link"}:${node.node_link_port}, ${publicPortSummary(node)}`}
+                        >
                           <Text maxW="150px" isTruncated fontFamily="mono" fontSize="xs">
                             {node.node_link_port} / {publicPortsFor(node).hysteria2}-
                             {publicPortsFor(node).shadowsocks}

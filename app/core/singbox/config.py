@@ -16,6 +16,7 @@ Protocol = Literal[
     "shadowsocks",
 ]
 PublicTLSMode = Literal["system-ca", "ip-ca", "ip-insecure"]
+NodeLinkProtocol = Literal["hysteria2", "anytls"]
 
 SUPPORTED_PROTOCOLS: tuple[Protocol, ...] = (
     "hysteria2",
@@ -26,6 +27,7 @@ SUPPORTED_PROTOCOLS: tuple[Protocol, ...] = (
     "trojan",
     "shadowsocks",
 )
+SUPPORTED_NODE_LINK_PROTOCOLS: tuple[NodeLinkProtocol, ...] = ("hysteria2", "anytls")
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,7 @@ class NodeLink:
     to_node: str
     auth_name: str
     password: str
+    protocol: NodeLinkProtocol = "hysteria2"
     enabled: bool = True
 
 
@@ -120,6 +123,7 @@ class SingBoxConfigBuilder:
     tls_key_path: str = "/etc/sing-box/certs/poc.key"
     public_tls: TLSSettings | None = None
     node_link_tls: TLSSettings | None = None
+    node_link_protocol: NodeLinkProtocol = "hysteria2"
     log_level: str = "info"
     node_links: list[NodeLink] | None = None
 
@@ -149,6 +153,7 @@ class SingBoxConfigBuilder:
                         to_node=to_node,
                         auth_name=f"link-{from_node}",
                         password=f"link-secret-{from_node}-to-{to_node}",
+                        protocol=self.node_link_protocol,
                     )
                 )
         return links
@@ -163,7 +168,7 @@ class SingBoxConfigBuilder:
             },
             "inbounds": [
                 *(self._public_inbounds(node) if node.entry_enabled else []),
-                self._node_link_inbound(node_name),
+                *self._node_link_inbounds(node_name),
             ],
             "outbounds": [
                 {"type": "direct", "tag": "direct"},
@@ -330,25 +335,46 @@ class SingBoxConfigBuilder:
             ],
         }
 
-    def _node_link_inbound(self, node_name: str) -> dict[str, Any]:
+    def _node_link_inbounds(self, node_name: str) -> list[dict[str, Any]]:
+        protocols = {
+            link.protocol
+            for link in self.node_links or []
+            if link.enabled and link.to_node == node_name and link.from_node != node_name
+        }
+        if not protocols:
+            protocols = {self.node_link_protocol}
+        return [
+            self._node_link_inbound(node_name, protocol)
+            for protocol in SUPPORTED_NODE_LINK_PROTOCOLS
+            if protocol in protocols
+        ]
+
+    def _node_link_inbound(self, node_name: str, protocol: NodeLinkProtocol) -> dict[str, Any]:
         node = self._node(node_name)
         links = [
             link
             for link in self.node_links or []
-            if link.enabled and link.to_node == node_name and link.from_node != node_name
+            if (
+                link.enabled
+                and link.protocol == protocol
+                and link.to_node == node_name
+                and link.from_node != node_name
+            )
         ]
-        return {
-            "type": "hysteria2",
-            "tag": "node-link-hysteria2",
+        inbound: dict[str, Any] = {
+            "type": protocol,
+            "tag": f"node-link-{protocol}",
             "listen": "::",
             "listen_port": node.node_link_port,
             "users": [
                 {"name": link.auth_name, "password": link.password}
                 for link in links
             ],
-            "ignore_client_bandwidth": True,
             "tls": self._server_tls(self.node_link_tls),
         }
+        if protocol == "hysteria2":
+            inbound["ignore_client_bandwidth"] = True
+        return inbound
 
     def _node_link_outbounds(self, node_name: str) -> list[dict[str, Any]]:
         outbounds = []
@@ -358,17 +384,20 @@ class SingBoxConfigBuilder:
             target = self._node(link.to_node)
             if not target.exit_enabled:
                 continue
-            outbounds.append(
-                {
-                    "type": "hysteria2",
-                    "tag": f"exit-{link.to_node}",
-                    "server": target.public_host,
-                    "server_port": target.node_link_port,
-                    "password": link.password,
-                    "tls": self._client_tls(target.public_host, self.node_link_tls),
-                }
-            )
+            outbounds.append(self._node_link_outbound(link, target))
         return outbounds
+
+    def _node_link_outbound(self, link: NodeLink, target: SingBoxNode) -> dict[str, Any]:
+        if link.protocol not in SUPPORTED_NODE_LINK_PROTOCOLS:
+            raise ValueError(f"Unsupported node-link protocol: {link.protocol}")
+        return {
+            "type": link.protocol,
+            "tag": f"exit-{link.to_node}",
+            "server": target.public_host,
+            "server_port": target.node_link_port,
+            "password": link.password,
+            "tls": self._client_tls(target.public_host, self.node_link_tls),
+        }
 
     def _route_rules(self, node_name: str, public_tags: list[str]) -> list[dict[str, Any]]:
         rules = []
