@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PANEL_URL="${PANEL_URL:-http://panel:8000}"
+PANEL_URL="${PANEL_URL:-https://panel:8000}"
+PANEL_TLS_VERIFY="${PANEL_TLS_VERIFY:-false}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 STATE_DIR="${STATE_DIR:-/state}"
@@ -13,19 +14,27 @@ log() {
   printf '[bootstrap-e2e:provisioner] %s\n' "$*"
 }
 
+curl_args() {
+  if [ "$PANEL_TLS_VERIFY" = "true" ]; then
+    printf '%s\n' "-fsS"
+  else
+    printf '%s\n' "-fsSk"
+  fi
+}
+
 api() {
   local method="$1"
   local path="$2"
   local data="${3:-}"
   if [ -n "$data" ]; then
-    curl -fsS \
+    curl "$(curl_args)" \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
       -X "$method" \
       -d "$data" \
       "$PANEL_URL$path"
   else
-    curl -fsS \
+    curl "$(curl_args)" \
       -H "Authorization: Bearer $TOKEN" \
       -X "$method" \
       "$PANEL_URL$path"
@@ -38,15 +47,15 @@ apt-get install -y --no-install-recommends ca-certificates curl jq
 
 log "waiting for panel"
 for _ in $(seq 1 90); do
-  if curl -fsS "$PANEL_URL/api/singbox/bootstrap.sh" >/dev/null 2>&1; then
+  if curl "$(curl_args)" "$PANEL_URL/api/singbox/bootstrap.sh" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-curl -fsS "$PANEL_URL/api/singbox/bootstrap.sh" >/dev/null
+curl "$(curl_args)" "$PANEL_URL/api/singbox/bootstrap.sh" >/dev/null
 
 TOKEN="$(
-  curl -fsS \
+  curl "$(curl_args)" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "username=$ADMIN_USERNAME&password=$ADMIN_PASSWORD" \
     "$PANEL_URL/api/admin/token" |
@@ -87,10 +96,8 @@ api POST /api/singbox/links/rebuild >/dev/null
 for node in node-a node-b node-c; do
   node_id="$(jq -r --arg name "$node" '.[] | select(.name == $name) | .id' "$STATE_DIR/nodes.json")"
   response="$(api POST "/api/singbox/nodes/$node_id/enrollment" '{"expires_in_seconds":3600}')"
-  token="$(jq -r '.token' <<<"$response")"
-  cat >"$STATE_DIR/$node.sh" <<EOF
-curl -fsSL "$PANEL_URL/api/singbox/bootstrap.sh" | bash -s -- enroll-node --runtime docker --panel-url "$PANEL_URL" --enroll-token "$token" --node-name "$node" --node-host "$node"
-EOF
+  command="$(jq -r '.command' <<<"$response" | sed 's/| sudo bash/| bash/')"
+  printf '%s --runtime docker\n' "$command" >"$STATE_DIR/$node.sh"
   chmod 0755 "$STATE_DIR/$node.sh"
 done
 

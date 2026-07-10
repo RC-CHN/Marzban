@@ -3,6 +3,9 @@ set -euo pipefail
 
 NODE_NAME="${NODE_NAME:?NODE_NAME is required}"
 STATE_DIR="${STATE_DIR:-/state}"
+SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
+CONFIG_PATH="${CONFIG_PATH:-/etc/marzban-singbox/config.json}"
+NODE_LINK_DIR="${NODE_LINK_DIR:-/etc/marzban-singbox/node-link}"
 
 log() {
   printf '[bootstrap-e2e:%s] %s\n' "$NODE_NAME" "$*"
@@ -21,16 +24,16 @@ fi
 log "running enrollment bootstrap"
 bash "$command_path"
 
-test -f /etc/sing-box/config.json
-test -f /etc/sing-box/node-link/ca.crt
-test -f /etc/sing-box/node-link/node.crt
-test -f /etc/sing-box/node-link/node.key
-test -f /etc/sing-box/node-link/client.crt
-test -f /etc/sing-box/node-link/client.key
+test -f "$CONFIG_PATH"
+test -f "$NODE_LINK_DIR/ca.crt"
+test -f "$NODE_LINK_DIR/node.crt"
+test -f "$NODE_LINK_DIR/node.key"
+test -f "$NODE_LINK_DIR/client.crt"
+test -f "$NODE_LINK_DIR/client.key"
 
-openssl verify -CAfile /etc/sing-box/node-link/ca.crt /etc/sing-box/node-link/node.crt
-openssl verify -CAfile /etc/sing-box/node-link/ca.crt /etc/sing-box/node-link/client.crt
-sing-box check -c /etc/sing-box/config.json
+openssl verify -CAfile "$NODE_LINK_DIR/ca.crt" "$NODE_LINK_DIR/node.crt"
+openssl verify -CAfile "$NODE_LINK_DIR/ca.crt" "$NODE_LINK_DIR/client.crt"
+"$SING_BOX_BIN" check -c "$CONFIG_PATH"
 
 log "starting sing-box"
-exec sing-box run -c /etc/sing-box/config.json
+exec "$SING_BOX_BIN" run -c "$CONFIG_PATH"

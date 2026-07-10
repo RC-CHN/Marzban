@@ -30,6 +30,7 @@ services:
       DEBUG: "True"
       UVICORN_PORT: "8000"
       SINGBOX_EXECUTABLE_PATH: /usr/local/bin/sing-box
+      SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY: "False"
       SUDO_USERNAME: admin
       SUDO_PASSWORD: admin
       SQLALCHEMY_DATABASE_URL: sqlite:////var/lib/marzban/e2e.sqlite3
@@ -44,7 +45,8 @@ services:
     image: ubuntu:22.04
     environment:
       <<: *e2e-proxy-env
-      PANEL_URL: http://panel:8000
+      PANEL_URL: https://panel:8000
+      PANEL_TLS_VERIFY: "False"
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: admin
     volumes:

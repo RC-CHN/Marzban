@@ -10,9 +10,14 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         curl \
+        dnsutils \
         gcc \
+        iproute2 \
+        jq \
         libpq-dev \
+        openssl \
         python3-dev \
+        tar \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /code/
@@ -24,4 +29,4 @@ COPY sing-box-1.13.14-linux-amd64/sing-box /usr/local/bin/sing-box
 
 RUN chmod 0755 /usr/local/bin/sing-box
 
-CMD ["bash", "-c", "alembic upgrade head; python main.py"]
+CMD ["bash", "-lc", "bash scripts/singbox-bootstrap.sh install-panel --panel-host panel; set -a; . /var/lib/marzban/.env; set +a; alembic upgrade head; python main.py"]
