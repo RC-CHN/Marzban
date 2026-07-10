@@ -11,7 +11,7 @@ from fastapi.routing import APIRoute
 from config import ALLOWED_ORIGINS, DASHBOARD_ENABLED, DOCS
 from app.utils.rate_limit import RateLimitMiddleware
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 app = FastAPI(
     title="MarzbanAPI",
