@@ -946,8 +946,8 @@ GET  /api/singbox/sync-agent.sh
 
 ```env
 SINGBOX_NODE_AUTO_UPGRADE=false
-SINGBOX_NODE_TARGET_IMAGE=ghcr.io/rc-chn/marzban:v0.9.4
-SINGBOX_SYNC_AGENT_VERSION=0.9.4
+SINGBOX_NODE_TARGET_IMAGE=ghcr.io/rc-chn/marzban:v0.9.5
+SINGBOX_SYNC_AGENT_VERSION=0.9.5
 ```
 
 默认关闭自动升级。打开 `SINGBOX_NODE_AUTO_UPGRADE=true` 后：
@@ -957,6 +957,8 @@ SINGBOX_SYNC_AGENT_VERSION=0.9.4
 3. 节点把 `/opt/marzban-singbox/docker-compose.yml` 中的 `image:` 改成目标镜像，备份旧文件为 `docker-compose.yml.prev`，执行 `docker compose pull && docker compose up -d`。
 4. 如果节点 agent 版本低于 `SINGBOX_SYNC_AGENT_VERSION`，节点从 `/api/singbox/sync-agent.sh` 下载最新 agent 并覆盖安装到 `/usr/local/bin/marzban-singbox-sync`。
 5. 升级成功或失败都会用 `/api/singbox/nodes/sync/applied` 回报，Dashboard 的节点 message 会显示最近一次结果。
+
+节点只回报有界的诊断摘要，控制面也会在请求校验前截断老 agent 发送的超长日志。回报接口返回非 2xx 时，agent 会打印 HTTP 状态和响应摘要；回报失败不会把已经完成的镜像升级或配置应用误判为执行失败，下一次心跳会重新对齐节点状态。
 
 已有老 agent 不会理解 `upgrade` 字段，所以从旧版本升级到首次支持自动升级的版本时，仍需要通过 bootstrap/enrollment 或 SSH 执行一次 agent 更新。完成这次过渡后，后续镜像和 agent 升级都可以由节点自动拉取。
 
