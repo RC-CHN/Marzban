@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.node import NodeStatus
 
@@ -28,6 +28,25 @@ SUPPORTED_SINGBOX_PROTOCOLS: tuple[SingBoxProtocol, ...] = (
     "trojan",
     "shadowsocks",
 )
+
+SINGBOX_NODE_MESSAGE_MAX_LENGTH = 1024
+_TRUNCATED_MESSAGE_PREFIX = "[truncated]\n"
+
+
+def _truncate_node_message(value: object) -> object:
+    if not isinstance(value, str) or len(value) <= SINGBOX_NODE_MESSAGE_MAX_LENGTH:
+        return value
+    remaining = SINGBOX_NODE_MESSAGE_MAX_LENGTH - len(_TRUNCATED_MESSAGE_PREFIX)
+    return _TRUNCATED_MESSAGE_PREFIX + value[-remaining:]
+
+
+class _SingBoxNodeMessagePayload(BaseModel):
+    message: str | None = Field(default=None, max_length=SINGBOX_NODE_MESSAGE_MAX_LENGTH)
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def truncate_message(cls, value: object) -> object:
+        return _truncate_node_message(value)
 
 
 class SingBoxProtocolPorts(BaseModel):
@@ -200,7 +219,7 @@ class SingBoxNodeEnrollResponse(BaseModel):
     config: dict
 
 
-class SingBoxNodeSyncRequest(BaseModel):
+class SingBoxNodeSyncRequest(_SingBoxNodeMessagePayload):
     token: str = Field(min_length=16)
     node_name: str | None = None
     current_config_hash: str | None = None
@@ -209,7 +228,6 @@ class SingBoxNodeSyncRequest(BaseModel):
     runtime: str | None = Field(default=None, max_length=64)
     container_image: str | None = Field(default=None, max_length=256)
     node_link_listening: bool | None = None
-    message: str | None = Field(default=None, max_length=512)
 
 
 class SingBoxNodeUpgradeInstruction(BaseModel):
@@ -229,7 +247,7 @@ class SingBoxNodeSyncResponse(BaseModel):
     upgrade: SingBoxNodeUpgradeInstruction | None = None
 
 
-class SingBoxNodeSyncAppliedRequest(BaseModel):
+class SingBoxNodeSyncAppliedRequest(_SingBoxNodeMessagePayload):
     token: str = Field(min_length=16)
     config_hash: str = Field(min_length=64, max_length=64)
     success: bool = True
@@ -237,7 +255,6 @@ class SingBoxNodeSyncAppliedRequest(BaseModel):
     sync_agent_version: str | None = Field(default=None, max_length=64)
     runtime: str | None = Field(default=None, max_length=64)
     container_image: str | None = Field(default=None, max_length=256)
-    message: str | None = Field(default=None, max_length=512)
 
 
 class SingBoxNodeSyncAppliedResponse(BaseModel):

@@ -94,18 +94,18 @@ class SingBoxProductionTest(unittest.TestCase):
         original_agent = production.SINGBOX_SYNC_AGENT_VERSION
         try:
             production.SINGBOX_NODE_AUTO_UPGRADE = True
-            production.SINGBOX_NODE_TARGET_IMAGE = "ghcr.io/rc-chn/marzban:v0.9.4"
-            production.SINGBOX_SYNC_AGENT_VERSION = "0.9.4"
+            production.SINGBOX_NODE_TARGET_IMAGE = "ghcr.io/rc-chn/marzban:v0.9.5"
+            production.SINGBOX_SYNC_AGENT_VERSION = "0.9.5"
 
             upgrade = production.build_node_upgrade_instruction(
                 runtime="docker",
-                container_image="ghcr.io/rc-chn/marzban:v0.9.3",
-                sync_agent_version="0.9.3",
+                container_image="ghcr.io/rc-chn/marzban:v0.9.4",
+                sync_agent_version="0.9.4",
                 agent_url="https://panel.example/api/singbox/sync-agent.sh",
             )
 
-            self.assertEqual(upgrade["image"], "ghcr.io/rc-chn/marzban:v0.9.4")
-            self.assertEqual(upgrade["agent_version"], "0.9.4")
+            self.assertEqual(upgrade["image"], "ghcr.io/rc-chn/marzban:v0.9.5")
+            self.assertEqual(upgrade["agent_version"], "0.9.5")
             self.assertEqual(upgrade["agent_url"], "https://panel.example/api/singbox/sync-agent.sh")
             self.assertTrue(upgrade["apply"])
         finally:
@@ -119,13 +119,13 @@ class SingBoxProductionTest(unittest.TestCase):
         original_agent = production.SINGBOX_SYNC_AGENT_VERSION
         try:
             production.SINGBOX_NODE_AUTO_UPGRADE = True
-            production.SINGBOX_NODE_TARGET_IMAGE = "ghcr.io/rc-chn/marzban:v0.9.4"
-            production.SINGBOX_SYNC_AGENT_VERSION = "0.9.4"
+            production.SINGBOX_NODE_TARGET_IMAGE = "ghcr.io/rc-chn/marzban:v0.9.5"
+            production.SINGBOX_SYNC_AGENT_VERSION = "0.9.5"
 
             upgrade = production.build_node_upgrade_instruction(
                 runtime="docker",
-                container_image="ghcr.io/rc-chn/marzban:v0.9.4",
-                sync_agent_version="0.9.4",
+                container_image="ghcr.io/rc-chn/marzban:v0.9.5",
+                sync_agent_version="0.9.5",
                 agent_url="https://panel.example/api/singbox/sync-agent.sh",
             )
 

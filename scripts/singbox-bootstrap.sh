@@ -22,7 +22,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/marzban-singbox}"
 SYNC_ENV_PATH="${SYNC_ENV_PATH:-/etc/marzban-singbox/sync.env}"
 SYNC_STATE_PATH="${SYNC_STATE_PATH:-$DATA_DIR/sync-state.json}"
 SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
-SYNC_AGENT_VERSION="${SYNC_AGENT_VERSION:-0.9.4}"
+SYNC_AGENT_VERSION="${SYNC_AGENT_VERSION:-0.9.5}"
 SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-60}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
 NODE_DOCKER_IMAGE="${NODE_DOCKER_IMAGE:-ghcr.io/rc-chn/marzban:latest}"
@@ -760,7 +760,8 @@ CONFIG_PATH="${CONFIG_PATH:-/etc/marzban-singbox/config.json}"
 SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
 SYNC_STATE_PATH="${SYNC_STATE_PATH:-/var/lib/marzban-singbox/sync-state.json}"
 SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
-SYNC_AGENT_VERSION="0.9.4"
+SYNC_AGENT_VERSION="0.9.5"
+REPORT_MESSAGE_MAX_CHARS=900
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
 SERVICE_NAME="${SERVICE_NAME:-marzban-sing-box}"
 NODE_DOCKER_CONTAINER_NAME="${NODE_DOCKER_CONTAINER_NAME:-marzban-sing-box}"
@@ -787,6 +788,36 @@ curl_tls_args() {
   else
     printf '%s\n' "-fsS"
   fi
+}
+
+curl_transport_args() {
+  if is_true "${PANEL_INSECURE:-false}"; then
+    printf '%s\n' "-sSk"
+  else
+    printf '%s\n' "-sS"
+  fi
+}
+
+installed_sync_agent_version() {
+  local installed_version
+  installed_version=""
+  if [ -f "$SYNC_SCRIPT_PATH" ]; then
+    installed_version="$(awk -F'"' '/^SYNC_AGENT_VERSION="/ { print $2; exit }' "$SYNC_SCRIPT_PATH")"
+  fi
+  printf '%s\n' "${installed_version:-$SYNC_AGENT_VERSION}"
+}
+
+summarize_message() {
+  local message="$1"
+  local head_chars=220
+  local marker=$'\n...[truncated]...\n'
+  local tail_chars
+  if [ "${#message}" -le "$REPORT_MESSAGE_MAX_CHARS" ]; then
+    printf '%s' "$message"
+    return
+  fi
+  tail_chars=$((REPORT_MESSAGE_MAX_CHARS - head_chars - ${#marker}))
+  printf '%s%s%s' "${message:0:head_chars}" "$marker" "${message: -tail_chars}"
 }
 
 current_config_hash() {
@@ -843,15 +874,19 @@ report_applied() {
   local hash="$1"
   local success="$2"
   local message="$3"
+  local http_status request_path response_body response_path summarized_message
+  request_path="$(mktemp)"
+  response_path="$(mktemp)"
+  summarized_message="$(summarize_message "$message")"
   jq -n \
     --arg token "$NODE_SYNC_TOKEN" \
     --arg config_hash "$hash" \
     --argjson success "$success" \
     --arg sing_box_version "$(sing_box_version)" \
-    --arg sync_agent_version "$SYNC_AGENT_VERSION" \
+    --arg sync_agent_version "$(installed_sync_agent_version)" \
     --arg runtime "${RUNTIME:-}" \
     --arg container_image "$(container_image)" \
-    --arg message "$message" \
+    --arg message "$summarized_message" \
     '{
       token: $token,
       config_hash: $config_hash,
@@ -861,11 +896,35 @@ report_applied() {
       runtime: $runtime,
       container_image: $container_image,
       message: $message
-    }' |
-    curl "$(curl_tls_args)" \
+    }' >"$request_path"
+  if ! http_status="$(curl "$(curl_transport_args)" \
       -H "Content-Type: application/json" \
-      --data-binary @- \
-      "$PANEL_URL/api/singbox/nodes/sync/applied" >/dev/null
+      --data-binary "@$request_path" \
+      -o "$response_path" \
+      -w '%{http_code}' \
+      "$PANEL_URL/api/singbox/nodes/sync/applied")"; then
+    response_body="$(summarize_message "$(<"$response_path")")"
+    rm -f "$request_path" "$response_path"
+    printf '%s\n' "failed to report node result${response_body:+: $response_body}" >&2
+    return 1
+  fi
+  response_body="$(summarize_message "$(<"$response_path")")"
+  rm -f "$request_path" "$response_path"
+  case "$http_status" in
+    2??)
+      return 0
+      ;;
+    *)
+      printf '%s\n' "panel rejected node result (HTTP $http_status)${response_body:+: $response_body}" >&2
+      return 1
+      ;;
+  esac
+}
+
+report_applied_or_warn() {
+  if ! report_applied "$@"; then
+    log "warning: operation result could not be reported; the next heartbeat will reconcile node state"
+  fi
 }
 
 restart_runtime() {
@@ -1000,7 +1059,7 @@ main() {
     --arg node_name "${NODE_NAME:-}" \
     --arg current_config_hash "$current_hash" \
     --arg sing_box_version "$(sing_box_version)" \
-    --arg sync_agent_version "$SYNC_AGENT_VERSION" \
+    --arg sync_agent_version "$(installed_sync_agent_version)" \
     --arg runtime "${RUNTIME:-}" \
     --arg container_image "$(container_image)" \
     --argjson node_link_listening "$(node_link_listening)" \
@@ -1027,12 +1086,12 @@ main() {
   if [ "$changed" != "true" ]; then
     write_state "$hash"
     if ! upgrade_output="$(apply_upgrade "$response" 2>&1)"; then
-      report_applied "$hash" false "$upgrade_output"
+      report_applied_or_warn "$hash" false "$upgrade_output"
       printf '%s\n' "$upgrade_output" >&2
       exit 1
     fi
     if [ -n "$upgrade_output" ]; then
-      report_applied "$hash" true "$upgrade_output"
+      report_applied_or_warn "$hash" true "$upgrade_output"
       printf '%s\n' "$upgrade_output"
     fi
     log "config already current: $hash"
@@ -1045,7 +1104,7 @@ main() {
   jq '.config' "$response" >"$next_path"
   if ! check_output="$("$SING_BOX_BIN" check -c "$next_path" 2>&1)"; then
     rm -f "$next_path"
-    report_applied "$hash" false "$check_output"
+    report_applied_or_warn "$hash" false "$check_output"
     printf '%s\n' "$check_output" >&2
     exit 1
   fi
@@ -1055,20 +1114,20 @@ main() {
   mv "$next_path" "$CONFIG_PATH"
   chmod 0644 "$CONFIG_PATH"
   if ! restart_output="$(restart_runtime 2>&1)"; then
-    report_applied "$hash" false "$restart_output"
+    report_applied_or_warn "$hash" false "$restart_output"
     printf '%s\n' "$restart_output" >&2
     exit 1
   fi
   write_state "$hash"
-  report_applied "$hash" true "${restart_output:-applied}"
+  report_applied_or_warn "$hash" true "${restart_output:-applied}"
   log "applied config: $hash"
   if ! upgrade_output="$(apply_upgrade "$response" 2>&1)"; then
-    report_applied "$hash" false "$upgrade_output"
+    report_applied_or_warn "$hash" false "$upgrade_output"
     printf '%s\n' "$upgrade_output" >&2
     exit 1
   fi
   if [ -n "$upgrade_output" ]; then
-    report_applied "$hash" true "$upgrade_output"
+    report_applied_or_warn "$hash" true "$upgrade_output"
     printf '%s\n' "$upgrade_output"
   fi
 }

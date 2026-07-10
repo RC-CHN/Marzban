@@ -153,6 +153,27 @@ curl -kfsS -H "Authorization: Bearer $TOKEN" https://panel:8000/api/singbox/stat
 ')"
 jq -e '.nodes[] | select(.name == "node-a") | (.sync_enabled == true and .sync_pending == false and .heartbeat_stale == false)' <<<"$status_json" >/dev/null
 
+echo "Checking oversized legacy agent report compatibility..."
+"${COMPOSE[@]}" exec -T node-a bash -lc '
+set -euo pipefail
+. /etc/marzban-singbox/sync.env
+config_hash="$(jq -r .config_hash /var/lib/marzban-singbox/sync-state.json)"
+message="upgrade-start-$(printf "x%.0s" {1..4096})-upgrade-finished"
+jq -n \
+  --arg token "$NODE_SYNC_TOKEN" \
+  --arg config_hash "$config_hash" \
+  --arg message "$message" \
+  "{token: \$token, config_hash: \$config_hash, success: true, message: \$message}" |
+  curl -kfsS \
+    -H "Content-Type: application/json" \
+    --data-binary @- \
+    https://panel:8000/api/singbox/nodes/sync/applied >/dev/null
+'
+nodes_json="$("${COMPOSE[@]}" exec -T node-a env TOKEN="$TOKEN" bash -lc '
+curl -kfsS -H "Authorization: Bearer $TOKEN" https://panel:8000/api/singbox/nodes
+')"
+jq -e '.[] | select(.name == "node-a") | (.message | length == 1024 and startswith("[truncated]\n") and endswith("upgrade-finished"))' <<<"$nodes_json" >/dev/null
+
 "${COMPOSE[@]}" exec -T node-a env TOKEN="$TOKEN" NODE_B_ID="$node_b_id" bash -lc '
 curl -kfsS -X PUT \
   -H "Authorization: Bearer $TOKEN" \
