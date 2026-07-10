@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from app.core.singbox import ca as singbox_ca
-from app.core.singbox.config import config_hash
+from app.core.singbox.config import SUPPORTED_PROTOCOLS, ProtocolPorts, config_hash
 from app.core.singbox.operations import deploy_node_config
 from app.core.singbox.poc import (
     NODES,
@@ -44,6 +44,7 @@ from app.models.singbox import (
 from app.models.user import UserStatus
 from app.utils import responses
 from config import (
+    SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY,
     SINGBOX_NODE_LINK_MTLS,
 )
 
@@ -58,6 +59,25 @@ class ExitPolicyRequest(BaseModel):
     entry_node: str = "node-a"
     auth_user: str = "u1"
     exit_node: str | None = None
+
+
+def _node_public_port_spec(node) -> str:
+    if not node.entry_enabled:
+        return "none"
+
+    defaults = ProtocolPorts()
+    overrides = node.public_ports or {}
+    parts = []
+    for protocol in SUPPORTED_PROTOCOLS:
+        port = overrides.get(protocol) or defaults.get(protocol)
+        if protocol in ("hysteria2", "tuic"):
+            parts.append(f"{port}/udp")
+        elif protocol == "shadowsocks":
+            parts.append(f"{port}/tcp")
+            parts.append(f"{port}/udp")
+        else:
+            parts.append(f"{port}/tcp")
+    return ",".join(parts)
 
 
 @router.get("/bootstrap.sh", response_class=PlainTextResponse, include_in_schema=False)
@@ -236,10 +256,15 @@ def create_node_enrollment(
     base_url = str(request.base_url).rstrip("/")
     bootstrap_url = f"{base_url}/api/singbox/bootstrap.sh"
     q = shlex.quote
+    curl_flags = "-fsSL" if SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY else "-fsSLk"
+    panel_tls_arg = "" if SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY else " --panel-insecure"
     command = (
-        f"curl -fsSL {q(bootstrap_url)} | sudo bash -s -- enroll-node "
+        f"curl {curl_flags} {q(bootstrap_url)} | sudo bash -s -- enroll-node "
         f"--panel-url {q(base_url)} --enroll-token {q(token)} "
-        f"--node-name {q(node.name)} --node-host {q(node.public_host)}"
+        f"--node-name {q(node.name)} --node-host {q(node.public_host)} "
+        f"--node-link-port {q(str(node.node_link_port))} "
+        f"--public-ports {q(_node_public_port_spec(node))}"
+        f"{panel_tls_arg}"
     )
     return SingBoxEnrollmentResponse(
         node_id=node.id,

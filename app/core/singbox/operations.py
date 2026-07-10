@@ -80,7 +80,7 @@ def _deploy_local(
     if config_path.exists():
         previous_path.write_text(config_path.read_text())
     config_path.write_text(next_path.read_text())
-    restart_output = _run_shell(node.restart_command or "systemctl restart sing-box")
+    restart_output = _run_shell(node.restart_command or "systemctl restart marzban-sing-box")
     return True, f"applied {config_path} hash={hash_value}\n{check_output}\n{restart_output}".strip()
 
 
@@ -97,10 +97,8 @@ def _deploy_ssh(node: SingBoxNode, config: dict[str, Any], *, apply: bool) -> tu
     mkdir_cmd = f"mkdir -p {shlex.quote(str(Path(config_path).parent))}"
     _run(["ssh", "-p", str(port), target, mkdir_cmd], stdin=None)
     _run(["ssh", "-p", str(port), target, f"cat > {shlex.quote(next_path)}"], stdin=payload)
-    check_output = _run(
-        ["ssh", "-p", str(port), target, f"sing-box check -c {shlex.quote(next_path)}"],
-        stdin=None,
-    )
+    check_cmd = f"{shlex.quote(SINGBOX_EXECUTABLE_PATH)} check -c {shlex.quote(next_path)}"
+    check_output = _run(["ssh", "-p", str(port), target, check_cmd], stdin=None)
     if not apply:
         return False, check_output.strip()
 
@@ -108,7 +106,7 @@ def _deploy_ssh(node: SingBoxNode, config: dict[str, Any], *, apply: bool) -> tu
         f"if [ -f {shlex.quote(config_path)} ]; then "
         f"cp {shlex.quote(config_path)} {shlex.quote(previous_path)}; fi; "
         f"mv {shlex.quote(next_path)} {shlex.quote(config_path)}; "
-        f"{node.restart_command or 'systemctl restart sing-box'}"
+        f"{node.restart_command or 'systemctl restart marzban-sing-box'}"
     )
     restart_output = _run(["ssh", "-p", str(port), target, apply_cmd], stdin=None)
     return True, f"{check_output}\n{restart_output}".strip()

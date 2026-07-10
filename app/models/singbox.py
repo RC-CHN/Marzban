@@ -51,17 +51,17 @@ class SingBoxNodeBase(BaseModel):
     ssh_host: str | None = None
     ssh_user: str | None = None
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
-    config_path: str = "/etc/sing-box/config.json"
-    restart_command: str | None = "systemctl restart sing-box"
+    config_path: str = "/etc/marzban-singbox/config.json"
+    restart_command: str | None = "systemctl restart marzban-sing-box"
     public_tls_mode: SingBoxPublicTLSMode = "system-ca"
-    public_tls_cert_path: str | None = "/etc/sing-box/certs/fullchain.pem"
-    public_tls_key_path: str | None = "/etc/sing-box/certs/privkey.pem"
-    public_tls_ca_cert_path: str | None = "/etc/sing-box/certs/ca.crt"
-    node_link_ca_cert_path: str | None = "/etc/sing-box/node-link/ca.crt"
-    node_link_cert_path: str | None = "/etc/sing-box/node-link/node.crt"
-    node_link_key_path: str | None = "/etc/sing-box/node-link/node.key"
-    node_link_client_cert_path: str | None = "/etc/sing-box/node-link/client.crt"
-    node_link_client_key_path: str | None = "/etc/sing-box/node-link/client.key"
+    public_tls_cert_path: str | None = "/etc/marzban-singbox/certs/fullchain.pem"
+    public_tls_key_path: str | None = "/etc/marzban-singbox/certs/privkey.pem"
+    public_tls_ca_cert_path: str | None = "/etc/marzban-singbox/certs/ca.crt"
+    node_link_ca_cert_path: str | None = "/etc/marzban-singbox/node-link/ca.crt"
+    node_link_cert_path: str | None = "/etc/marzban-singbox/node-link/node.crt"
+    node_link_key_path: str | None = "/etc/marzban-singbox/node-link/node.key"
+    node_link_client_cert_path: str | None = "/etc/marzban-singbox/node-link/client.crt"
+    node_link_client_key_path: str | None = "/etc/marzban-singbox/node-link/client.key"
     node_link_mtls_enabled: bool = True
     usage_coefficient: float = Field(default=1.0, gt=0)
 

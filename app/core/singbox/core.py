@@ -18,7 +18,7 @@ class SingBoxCore(CoreRuntime):
 
     def __init__(
         self,
-        executable_path: str = "/usr/local/bin/sing-box",
+        executable_path: str = "/opt/marzban-singbox/bin/sing-box",
         config_path: str = "/tmp/sing-box-config.json",
         work_dir: str | None = None,
     ) -> None:

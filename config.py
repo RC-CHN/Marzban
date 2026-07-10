@@ -27,28 +27,37 @@ VITE_BASE_API = f"http://127.0.0.1:{UVICORN_PORT}/api/" \
     else config("VITE_BASE_API", default="/api/")
 
 CORE_RUNTIME = "singbox"
-SINGBOX_EXECUTABLE_PATH = config("SINGBOX_EXECUTABLE_PATH", default="/usr/local/bin/sing-box")
+SINGBOX_EXECUTABLE_PATH = config("SINGBOX_EXECUTABLE_PATH", default="/opt/marzban-singbox/bin/sing-box")
 SINGBOX_CONFIG_DIR = config("SINGBOX_CONFIG_DIR", default="/var/lib/marzban/singbox/configs")
-SINGBOX_WORK_DIR = config("SINGBOX_WORK_DIR", default="/var/lib/sing-box")
+SINGBOX_WORK_DIR = config("SINGBOX_WORK_DIR", default="/var/lib/marzban-singbox")
 SINGBOX_STANDALONE_CONFIG_PATH = config("SINGBOX_STANDALONE_CONFIG_PATH", default="")
-SINGBOX_TLS_CERT_PATH = config("SINGBOX_TLS_CERT_PATH", default="/etc/sing-box/certs/fullchain.pem")
-SINGBOX_TLS_KEY_PATH = config("SINGBOX_TLS_KEY_PATH", default="/etc/sing-box/certs/privkey.pem")
+SINGBOX_TLS_CERT_PATH = config("SINGBOX_TLS_CERT_PATH", default="/etc/marzban-singbox/certs/fullchain.pem")
+SINGBOX_TLS_KEY_PATH = config("SINGBOX_TLS_KEY_PATH", default="/etc/marzban-singbox/certs/privkey.pem")
 SINGBOX_PUBLIC_TLS_CA_CERT_PATH = config("SINGBOX_PUBLIC_TLS_CA_CERT_PATH", default="")
 SINGBOX_TLS_INSECURE = config("SINGBOX_TLS_INSECURE", default=False, cast=bool)
 SINGBOX_NODE_LINK_PROTOCOL = config("SINGBOX_NODE_LINK_PROTOCOL", default="hysteria2")
 SINGBOX_NODE_LINK_PORT = config("SINGBOX_NODE_LINK_PORT", default=12443, cast=int)
 SINGBOX_NODE_LINK_CA_DIR = config("SINGBOX_NODE_LINK_CA_DIR", default="/var/lib/marzban/ca/node-link")
-SINGBOX_NODE_LINK_CA_CERT_PATH = config("SINGBOX_NODE_LINK_CA_CERT_PATH", default="/etc/sing-box/node-link/ca.crt")
-SINGBOX_NODE_LINK_CERT_PATH = config("SINGBOX_NODE_LINK_CERT_PATH", default="/etc/sing-box/node-link/node.crt")
-SINGBOX_NODE_LINK_KEY_PATH = config("SINGBOX_NODE_LINK_KEY_PATH", default="/etc/sing-box/node-link/node.key")
+SINGBOX_NODE_LINK_CA_CERT_PATH = config(
+    "SINGBOX_NODE_LINK_CA_CERT_PATH",
+    default="/etc/marzban-singbox/node-link/ca.crt",
+)
+SINGBOX_NODE_LINK_CERT_PATH = config(
+    "SINGBOX_NODE_LINK_CERT_PATH",
+    default="/etc/marzban-singbox/node-link/node.crt",
+)
+SINGBOX_NODE_LINK_KEY_PATH = config(
+    "SINGBOX_NODE_LINK_KEY_PATH",
+    default="/etc/marzban-singbox/node-link/node.key",
+)
 SINGBOX_NODE_LINK_MTLS = config("SINGBOX_NODE_LINK_MTLS", default=True, cast=bool)
 SINGBOX_NODE_LINK_CLIENT_CERT_PATH = config(
     "SINGBOX_NODE_LINK_CLIENT_CERT_PATH",
-    default="/etc/sing-box/node-link/client.crt",
+    default="/etc/marzban-singbox/node-link/client.crt",
 )
 SINGBOX_NODE_LINK_CLIENT_KEY_PATH = config(
     "SINGBOX_NODE_LINK_CLIENT_KEY_PATH",
-    default="/etc/sing-box/node-link/client.key",
+    default="/etc/marzban-singbox/node-link/client.key",
 )
 SINGBOX_RESTART_STRATEGY = config("SINGBOX_RESTART_STRATEGY", default="checked-restart")
 SINGBOX_SHADOWSOCKS_METHOD = config("SINGBOX_SHADOWSOCKS_METHOD", default="2022-blake3-aes-128-gcm")
@@ -56,6 +65,7 @@ SINGBOX_SHADOWSOCKS_SERVER_PASSWORD = config(
     "SINGBOX_SHADOWSOCKS_SERVER_PASSWORD",
     default="MDEyMzQ1Njc4OWFiY2RlZg==",
 )
+SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY = config("SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY", default=False, cast=bool)
 
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = config("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", cast=int, default=1440)
 

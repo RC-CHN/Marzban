@@ -9,13 +9,24 @@ NODE_HOST="${NODE_HOST:-}"
 PANEL_URL="${PANEL_URL:-}"
 ENROLL_TOKEN="${ENROLL_TOKEN:-}"
 NODE_LINK_PORT="${NODE_LINK_PORT:-12443}"
-CONFIG_PATH="${CONFIG_PATH:-/etc/sing-box/config.json}"
-SERVICE_NAME="${SERVICE_NAME:-sing-box}"
-SING_BOX_BIN="${SING_BOX_BIN:-/usr/local/bin/sing-box}"
-NODE_LINK_DIR="${NODE_LINK_DIR:-/etc/sing-box/node-link}"
-PUBLIC_CERT_DIR="${PUBLIC_CERT_DIR:-/etc/sing-box/certs}"
-DATA_DIR="${DATA_DIR:-/var/lib/sing-box}"
+DEFAULT_PUBLIC_PORTS="11001/udp,11002/udp,11003/tcp,11004/tcp,11005/tcp,11006/tcp,11007/tcp,11007/udp"
+PUBLIC_PORTS="${PUBLIC_PORTS:-$DEFAULT_PUBLIC_PORTS}"
+SKIP_PORT_CHECK="${SKIP_PORT_CHECK:-false}"
+CONFIG_PATH="${CONFIG_PATH:-/etc/marzban-singbox/config.json}"
+SERVICE_NAME="${SERVICE_NAME:-marzban-sing-box}"
+SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
+NODE_LINK_DIR="${NODE_LINK_DIR:-/etc/marzban-singbox/node-link}"
+PUBLIC_CERT_DIR="${PUBLIC_CERT_DIR:-/etc/marzban-singbox/certs}"
+DATA_DIR="${DATA_DIR:-/var/lib/marzban-singbox}"
 PANEL_DATA_DIR="${PANEL_DATA_DIR:-/var/lib/marzban}"
+PANEL_TLS_MODE="${PANEL_TLS_MODE:-self-signed}"
+PANEL_HOST="${PANEL_HOST:-}"
+PANEL_CERT_DAYS="${PANEL_CERT_DAYS:-397}"
+PANEL_CERT_DIR="${PANEL_CERT_DIR:-$PANEL_DATA_DIR/certs/panel}"
+PANEL_CERT_PATH="${PANEL_CERT_PATH:-$PANEL_CERT_DIR/fullchain.pem}"
+PANEL_KEY_PATH="${PANEL_KEY_PATH:-$PANEL_CERT_DIR/privkey.pem}"
+PANEL_ENV_PATH="${PANEL_ENV_PATH:-$PANEL_DATA_DIR/.env}"
+PANEL_INSECURE="${PANEL_INSECURE:-false}"
 NODE_LINK_CA_DIR="${NODE_LINK_CA_DIR:-/var/lib/marzban/ca/node-link}"
 
 usage() {
@@ -32,8 +43,13 @@ Optional:
   --sing-box-version VERSION   default: 1.13.14
   --sing-box-binary PATH       install an existing local sing-box binary instead of downloading
   --node-link-port PORT        default: 12443
+  --public-ports PORTS         comma-separated PORT/PROTO list; use "none" to skip public entry ports
+  --skip-port-check            skip local listening-port preflight
+  --panel-host HOST            panel certificate SAN for install-panel
+  --panel-tls self-signed|none default: self-signed
+  --panel-insecure             skip TLS verification when calling a self-signed panel
   --runtime systemd|docker     default: systemd
-  --config-path PATH           default: /etc/sing-box/config.json
+  --config-path PATH           default: /etc/marzban-singbox/config.json
 USAGE
 }
 
@@ -89,6 +105,26 @@ parse_args() {
         NODE_LINK_PORT="${2:-}"
         shift 2
         ;;
+      --public-ports)
+        PUBLIC_PORTS="${2:-}"
+        shift 2
+        ;;
+      --skip-port-check)
+        SKIP_PORT_CHECK=true
+        shift
+        ;;
+      --panel-host)
+        PANEL_HOST="${2:-}"
+        shift 2
+        ;;
+      --panel-tls)
+        PANEL_TLS_MODE="${2:-}"
+        shift 2
+        ;;
+      --panel-insecure)
+        PANEL_INSECURE=true
+        shift
+        ;;
       --runtime)
         RUNTIME="${2:-}"
         shift 2
@@ -125,6 +161,14 @@ require_enroll_args() {
 
 install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
+    if command -v curl >/dev/null 2>&1 \
+      && command -v jq >/dev/null 2>&1 \
+      && command -v openssl >/dev/null 2>&1 \
+      && command -v ss >/dev/null 2>&1 \
+      && command -v dig >/dev/null 2>&1 \
+      && command -v tar >/dev/null 2>&1; then
+      return
+    fi
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
@@ -142,7 +186,7 @@ ensure_directories() {
 install_systemd_service() {
   cat >"/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=sing-box service
+Description=Marzban sing-box service
 After=network-online.target
 Wants=network-online.target
 
@@ -203,6 +247,8 @@ install_sing_box_binary() {
     return
   fi
 
+  install -d -m 0755 "$(dirname "$SING_BOX_BIN")"
+
   if [ -n "$SING_BOX_BINARY_PATH" ]; then
     [ -x "$SING_BOX_BINARY_PATH" ] || die "sing-box binary is not executable: $SING_BOX_BINARY_PATH"
     install -m 0755 "$SING_BOX_BINARY_PATH" "$SING_BOX_BIN"
@@ -255,10 +301,163 @@ check_cert() {
   fi
 }
 
-check_ports() {
-  if command -v ss >/dev/null 2>&1; then
-    ss -lntu | grep -E "(:11001|:11002|:11003|:11004|:11005|:11006|:11007|:${NODE_LINK_PORT})" || true
+is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_port() {
+  local port="$1"
+  case "$port" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+normalize_proto() {
+  local proto="$1"
+  case "$proto" in
+    tcp|TCP)
+      printf '%s\n' "tcp"
+      ;;
+    udp|UDP)
+      printf '%s\n' "udp"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_ip_address() {
+  local value="$1"
+  case "$value" in
+    *:*)
+      return 0
+      ;;
+    *.*)
+      case "$value" in
+        *[!0-9.]*)
+          return 1
+          ;;
+      esac
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+infer_panel_host() {
+  if [ -n "$PANEL_HOST" ]; then
+    printf '%s\n' "$PANEL_HOST"
+    return
   fi
+
+  local candidate
+  for candidate in $(hostname -I 2>/dev/null || true); do
+    case "$candidate" in
+      127.*|::1)
+        continue
+        ;;
+      *)
+        printf '%s\n' "$candidate"
+        return
+        ;;
+    esac
+  done
+  hostname -f 2>/dev/null || hostname 2>/dev/null || printf '%s\n' "localhost"
+}
+
+port_in_use() {
+  local port="$1"
+  local proto="$2"
+  if ! command -v ss >/dev/null 2>&1; then
+    log "port check skipped: ss is not installed"
+    return 1
+  fi
+  case "$proto" in
+    tcp)
+      ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .
+      ;;
+    udp)
+      ss -H -lun "sport = :$port" 2>/dev/null | grep -q .
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+curl_tls_args() {
+  if is_true "$PANEL_INSECURE"; then
+    printf '%s\n' "-fsSLk"
+  else
+    printf '%s\n' "-fsSL"
+  fi
+}
+
+check_port_available() {
+  local label="$1"
+  local port="$2"
+  local proto="$3"
+  validate_port "$port" || die "invalid $label port: $port"
+  proto="$(normalize_proto "$proto")" || die "invalid $label protocol: $proto"
+  if port_in_use "$port" "$proto"; then
+    die "$label port is already in use: $port/$proto. Change the node port in Dashboard or pass --public-ports/--node-link-port."
+  fi
+  log "$label port available: $port/$proto"
+}
+
+check_public_ports_available() {
+  local raw="$PUBLIC_PORTS"
+  raw="${raw//[[:space:]]/}"
+  case "$raw" in
+    ''|none|NONE|false|FALSE|0)
+      log "public entry port check skipped"
+      return
+      ;;
+  esac
+
+  local old_ifs item port proto
+  old_ifs="$IFS"
+  IFS=","
+  for item in $raw; do
+    [ -n "$item" ] || continue
+    case "$item" in
+      */*)
+        port="${item%/*}"
+        proto="${item##*/}"
+        ;;
+      *:*)
+        proto="${item%%:*}"
+        port="${item##*:}"
+        ;;
+      *)
+        die "invalid public port spec: $item (expected PORT/PROTO, for example 11001/udp)"
+        ;;
+    esac
+    check_port_available "public entry" "$port" "$proto"
+  done
+  IFS="$old_ifs"
+}
+
+check_ports() {
+  if is_true "$SKIP_PORT_CHECK"; then
+    log "port check skipped by --skip-port-check"
+    return
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    log "port check skipped: $SERVICE_NAME is already active"
+    return
+  fi
+  check_public_ports_available
+  check_port_available "node-link" "$NODE_LINK_PORT" "udp"
 }
 
 install_node() {
@@ -266,6 +465,7 @@ install_node() {
   require_node_args
   log "installing node $NODE_NAME for $NODE_HOST"
   install_packages
+  check_ports
   install_sing_box_binary
   ensure_directories
   write_placeholder_config
@@ -329,6 +529,7 @@ enroll_node() {
   require_enroll_args
   log "enrolling node $NODE_NAME for $NODE_HOST"
   install_packages
+  check_ports
   install_sing_box_binary
   ensure_directories
 
@@ -359,7 +560,7 @@ enroll_node() {
       public_csr: $public_csr
     }' >"$request_path"
 
-  curl -fsSL \
+  curl "$(curl_tls_args)" \
     -H "Content-Type: application/json" \
     --data-binary "@$request_path" \
     "$panel/api/singbox/nodes/enroll" \
@@ -426,14 +627,102 @@ init_panel_ca() {
   chmod 600 "$ca_key"
 }
 
+set_panel_env_var() {
+  local key="$1"
+  local value="$2"
+  local tmp_path
+  install -d -m 0755 "$(dirname "$PANEL_ENV_PATH")"
+  tmp_path="$(mktemp)"
+  if [ -f "$PANEL_ENV_PATH" ]; then
+    grep -v -E "^${key}[[:space:]]*=" "$PANEL_ENV_PATH" >"$tmp_path" || true
+  fi
+  printf '%s=%s\n' "$key" "$value" >>"$tmp_path"
+  install -m 0600 "$tmp_path" "$PANEL_ENV_PATH"
+  rm -f "$tmp_path"
+}
+
+init_panel_tls() {
+  case "$PANEL_TLS_MODE" in
+    self-signed)
+      ;;
+    none|disabled|off)
+      log "panel TLS disabled by --panel-tls $PANEL_TLS_MODE"
+      return
+      ;;
+    *)
+      die "--panel-tls must be self-signed or none"
+      ;;
+  esac
+
+  local host san_type san_value tmp_config
+  host="$(infer_panel_host)"
+  case "$host" in
+    ''|*/*|*$'\n'*|*$'\r'*)
+      die "invalid panel host for self-signed certificate: $host"
+      ;;
+  esac
+  if is_ip_address "$host"; then
+    san_type="IP"
+  else
+    san_type="DNS"
+  fi
+  san_value="$host"
+
+  install -d -m 0755 "$PANEL_CERT_DIR"
+  if [ -f "$PANEL_CERT_PATH" ] && [ -f "$PANEL_KEY_PATH" ]; then
+    log "keeping existing panel certificate: $PANEL_CERT_PATH"
+  else
+    tmp_config="$(mktemp)"
+    cat >"$tmp_config" <<EOF
+[req]
+default_bits = 2048
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = $host
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+$san_type.1 = $san_value
+DNS.2 = localhost
+IP.2 = 127.0.0.1
+EOF
+    openssl req -x509 -newkey rsa:2048 \
+      -keyout "$PANEL_KEY_PATH" \
+      -out "$PANEL_CERT_PATH" \
+      -days "$PANEL_CERT_DAYS" \
+      -nodes \
+      -config "$tmp_config" \
+      -extensions v3_req
+    rm -f "$tmp_config"
+    chmod 0644 "$PANEL_CERT_PATH"
+    chmod 0600 "$PANEL_KEY_PATH"
+    log "generated self-signed panel certificate for $host"
+  fi
+
+  set_panel_env_var UVICORN_SSL_CERTFILE "$PANEL_CERT_PATH"
+  set_panel_env_var UVICORN_SSL_KEYFILE "$PANEL_KEY_PATH"
+  set_panel_env_var UVICORN_SSL_CA_TYPE private
+  log "panel TLS env written: $PANEL_ENV_PATH"
+}
+
 install_panel() {
   need_root
   install_packages
   install -d -m 0755 "$PANEL_DATA_DIR"
   install -d -m 0755 "$PANEL_DATA_DIR/singbox/configs"
   init_panel_ca
+  init_panel_tls
   log "panel data dir: $PANEL_DATA_DIR"
   log "node-link CA dir: $NODE_LINK_CA_DIR"
+  log "panel cert: $PANEL_CERT_PATH"
   log "next: start Marzban and create sing-box nodes from the Dashboard or /api/singbox"
 }
 
@@ -445,6 +734,7 @@ status() {
   log "runtime: $RUNTIME"
   log "config: $CONFIG_PATH"
   check_config || true
+  check_cert "$PANEL_CERT_PATH" "panel cert"
   check_cert "$NODE_LINK_DIR/ca.crt" "node-link ca"
   check_cert "$NODE_LINK_DIR/node.crt" "node-link cert"
   check_cert "$PUBLIC_CERT_DIR/fullchain.pem" "public cert"
