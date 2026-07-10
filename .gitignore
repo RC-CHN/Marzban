@@ -164,3 +164,4 @@ sing-box-*-linux-*/libcronet.so
 *-dev.yaml
 *-debug.*
 .rcoder/
+misc/
