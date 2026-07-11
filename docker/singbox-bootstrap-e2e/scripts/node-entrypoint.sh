@@ -21,6 +21,11 @@ if [ "${E2E_INSTALL_DEPS:-false}" = "true" ]; then
   apt-get install -y --no-install-recommends ca-certificates curl
 fi
 
+if [ "${E2E_OCCUPY_NODE_LINK_PORT:-false}" = "true" ]; then
+  python3 -m http.server 12443 --bind 0.0.0.0 >/tmp/e2e-occupied-node-link-port.log 2>&1 &
+  log "reserved node-link port 12443 to verify automatic selection"
+fi
+
 command_path="$STATE_DIR/$NODE_NAME.sh"
 if [ ! -f "$command_path" ]; then
   log "missing enrollment command: $command_path"
@@ -47,6 +52,14 @@ openssl verify -CAfile "$NODE_LINK_DIR/ca.crt" "$NODE_LINK_DIR/client.crt"
 if [ -f "$COMPOSE_DIR/docker-compose.yml" ]; then
   log "sing-box is managed by docker compose"
   docker ps --filter "name=$NODE_DOCKER_CONTAINER_NAME" --format '{{.Names}}' | grep -qx "$NODE_DOCKER_CONTAINER_NAME"
+  (
+    while true; do
+      if ! /usr/local/bin/marzban-singbox-sync; then
+        log "sync failed; retrying in 30 seconds"
+      fi
+      sleep 30
+    done
+  ) &
   exec tail -f /dev/null
 fi
 

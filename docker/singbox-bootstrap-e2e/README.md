@@ -1,9 +1,11 @@
 # sing-box bootstrap E2E
 
 This stack builds one panel and bootstraps three Ubuntu 22.04 nodes through the
-same script used by production nodes. It verifies public protocol ingress,
+same script used by production nodes. It verifies all 21 entry-node/protocol
+combinations, public protocol ingress,
 node-link mTLS, the selected exit node, pull sync, heartbeat reporting, and
-legacy agent report compatibility.
+legacy agent report compatibility. Public TLS uses the panel's private CA and
+validates IP certificates; the test stack does not use insecure TLS.
 
 ## Fast development run
 
@@ -45,3 +47,20 @@ bash docker/singbox-bootstrap-e2e/scripts/run-tests.sh
 GitHub Actions stores the toolbox, E2E panel, and production image BuildKit
 caches in separate scopes so package caches from different base distributions
 cannot contaminate each other.
+
+## Persistent development stack
+
+Run the real panel, three bootstrapped Ubuntu 22.04 nodes, their sing-box
+containers, and continuous sync agents without the test runner's automatic
+cleanup:
+
+```bash
+bash docker/singbox-bootstrap-e2e/scripts/up-dev-stack.sh
+```
+
+The HTTPS dashboard is bound to `127.0.0.1:18444`. Stop and remove the stack
+with:
+
+```bash
+bash docker/singbox-bootstrap-e2e/scripts/down-dev-stack.sh
+```

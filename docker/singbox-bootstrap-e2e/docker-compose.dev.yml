@@ -1,0 +1,9 @@
+services:
+  panel:
+    environment:
+      DASHBOARD_ENABLED: "True"
+      DEBUG: "False"
+    ports:
+      - "127.0.0.1:${E2E_PANEL_PORT:-18444}:8000"
+    volumes:
+      - ${E2E_DASHBOARD_BUILD:-/tmp/marzban-dashboard-e2e}:/code/app/dashboard/build:ro

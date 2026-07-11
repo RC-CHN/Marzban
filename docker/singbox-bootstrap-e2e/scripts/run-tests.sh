@@ -10,6 +10,7 @@ SING_BOX_BIN="/opt/marzban-singbox/bin/sing-box"
 RUNTIME_DIR="$ROOT/runtime"
 NODE_CONFIG_PATH="/etc/marzban-singbox/config.json"
 NODE_LINK_DIR="/etc/marzban-singbox/node-link"
+PUBLIC_CERT_DIR="/etc/marzban-singbox/certs"
 
 if [ -n "${E2E_HTTP_PROXY:-}" ] && [ -z "${E2E_HTTPS_PROXY:-}" ]; then
   export E2E_HTTPS_PROXY="$E2E_HTTP_PROXY"
@@ -74,14 +75,22 @@ done
 
 echo "Checking node-link CA and mTLS config..."
 for node in node-a node-b node-c; do
+  case "$node" in
+    node-a) node_ip="172.30.10.11" ;;
+    node-b) node_ip="172.30.10.12" ;;
+    node-c) node_ip="172.30.10.13" ;;
+  esac
   "${COMPOSE[@]}" exec -T "$node" env \
     NODE_CONFIG_PATH="$NODE_CONFIG_PATH" \
     NODE_LINK_DIR="$NODE_LINK_DIR" \
+    PUBLIC_CERT_DIR="$PUBLIC_CERT_DIR" \
+    NODE_IP="$node_ip" \
     SING_BOX_BIN="$SING_BOX_BIN" \
     bash -lc '
 set -euo pipefail
 openssl verify -CAfile "$NODE_LINK_DIR/ca.crt" "$NODE_LINK_DIR/node.crt" >/dev/null
 openssl verify -CAfile "$NODE_LINK_DIR/ca.crt" "$NODE_LINK_DIR/client.crt" >/dev/null
+openssl verify -CAfile "$PUBLIC_CERT_DIR/ca.crt" -verify_ip "$NODE_IP" "$PUBLIC_CERT_DIR/fullchain.pem" >/dev/null
 grep -q "\"client_authentication\": \"require-and-verify\"" "$NODE_CONFIG_PATH"
 grep -q "\"client_certificate_path\": \"$NODE_LINK_DIR/client.crt\"" "$NODE_CONFIG_PATH"
 if jq -e ".outbounds[]? | select((.tag // \"\") | startswith(\"exit-\")) | select(.tls.insecure == true)" "$NODE_CONFIG_PATH" >/dev/null; then
@@ -92,14 +101,36 @@ fi
 '
 done
 
+echo "Checking node-a protocol profile rendering..."
+"${COMPOSE[@]}" exec -T node-a bash -lc '
+set -euo pipefail
+config=/etc/marzban-singbox/config.json
+jq -e '\''.inbounds[] | select(.tag == "public-hysteria2") | (.up_mbps == 250 and .down_mbps == 500 and .obfs.type == "salamander")'\'' "$config" >/dev/null
+jq -e '\''.inbounds[] | select(.tag == "public-tuic") | (.congestion_control == "cubic" and .heartbeat == "15s")'\'' "$config" >/dev/null
+jq -e '\''.inbounds[] | select(.tag == "public-anytls") | (.padding_scheme == ["stop=4", "0=16-32"])'\'' "$config" >/dev/null
+jq -e '\''.outbounds[] | select(.type == "hysteria2") | .obfs.password == "e2e-hysteria2-obfs"'\'' /state/client-node-a-hysteria2.json >/dev/null
+jq -e '\''.outbounds[] | select(.type == "anytls") | (.idle_session_timeout == "45s" and .min_idle_session == 2)'\'' /state/client-node-a-anytls.json >/dev/null
+'
+
 run_case() {
-  local protocol="$1"
+  local entry_node="$1"
+  local protocol="$2"
   local output
-  echo "==> $protocol expects exit $EXPECTED_EXIT"
+  echo "==> $entry_node / $protocol expects exit $EXPECTED_EXIT"
   if ! output="$("${COMPOSE[@]}" exec -T node-a bash -lc "
 set -euo pipefail
-$SING_BOX_BIN check -c /state/client-$protocol.json >/dev/null
-$SING_BOX_BIN run -c /state/client-$protocol.json >/tmp/sing-box-client-$protocol.log 2>&1 &
+$SING_BOX_BIN check -c /state/client-$entry_node-$protocol.json >/dev/null
+case "$protocol" in
+  hysteria2|tuic|anytls|trojan)
+    if jq -e '.outbounds[]? | select(.tls.enabled == true) | select(.tls.insecure == true)' /state/client-$entry_node-$protocol.json >/dev/null; then
+      echo 'public TLS outbound must not use insecure=true' >&2
+      exit 1
+    fi
+    jq -e '.outbounds[] | select(.tls.enabled == true)' /state/client-$entry_node-$protocol.json >/dev/null
+    jq -e '.outbounds[] | select(.tls.enabled == true) | (.tls.certificate_path | length > 0)' /state/client-$entry_node-$protocol.json >/dev/null
+    ;;
+esac
+$SING_BOX_BIN run -c /state/client-$entry_node-$protocol.json >/tmp/sing-box-client-$entry_node-$protocol.log 2>&1 &
 pid=\$!
 trap 'kill \$pid >/dev/null 2>&1 || true' EXIT
 for _ in \$(seq 1 20); do
@@ -112,11 +143,11 @@ done
 echo 'curl failed:' >&2
 cat /tmp/curl-$protocol.err >&2 || true
 echo 'sing-box client log:' >&2
-cat /tmp/sing-box-client-$protocol.log >&2 || true
+cat /tmp/sing-box-client-$entry_node-$protocol.log >&2 || true
 exit 1
 ")"; then
     echo "$output"
-    echo "Case $protocol failed; node logs follow."
+    echo "Case $entry_node / $protocol failed; node logs follow."
     "${COMPOSE[@]}" logs --tail=160 node-a node-b node-c whoami || true
     return 1
   fi
@@ -128,8 +159,10 @@ exit 1
   fi
 }
 
-for protocol in "${PROTOCOLS[@]}"; do
-  run_case "$protocol"
+for entry_node in node-a node-b node-c; do
+  for protocol in "${PROTOCOLS[@]}"; do
+    run_case "$entry_node" "$protocol"
+  done
 done
 
 echo "Checking node pull-sync heartbeat and config apply..."
@@ -143,6 +176,12 @@ curl -kfsS \
 nodes_json="$("${COMPOSE[@]}" exec -T node-a env TOKEN="$TOKEN" bash -lc '
 curl -kfsS -H "Authorization: Bearer $TOKEN" https://panel:8000/api/singbox/nodes
 ')"
+node_a_link_port="$(jq -r '.[] | select(.name == "node-a") | .node_link_port' <<<"$nodes_json")"
+[ -n "$node_a_link_port" ] && [ "$node_a_link_port" != "null" ]
+if [ "$node_a_link_port" = "12443" ]; then
+  echo "node-a did not replace the occupied node-link port" >&2
+  exit 1
+fi
 node_b_id="$(jq -r '.[] | select(.name == "node-b") | .id' <<<"$nodes_json")"
 node_c_id="$(jq -r '.[] | select(.name == "node-c") | .id' <<<"$nodes_json")"
 [ -n "$node_b_id" ] && [ "$node_b_id" != "null" ]

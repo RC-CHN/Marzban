@@ -77,6 +77,7 @@ services:
     environment:
       <<: *e2e-proxy-env
       NODE_NAME: node-a
+      E2E_OCCUPY_NODE_LINK_PORT: "true"
       SING_BOX_BINARY_PATH: /opt/marzban/sing-box
       NODE_DOCKER_CONTAINER_NAME: marzban-singbox-e2e-node-a
     volumes:
