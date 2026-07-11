@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite --port 3000",
     "build": "tsc && vite build",
+    "test:e2e": "playwright test",
     "preview": "vite preview --port 3000",
     "gen:theme-typings": "chakra-cli tokens ./chakra.config.ts",
     "postinstall": "npm run gen:theme-typings"
@@ -15,6 +16,7 @@
     "@emotion/styled": "^11.10.5",
     "@heroicons/react": "^2.0.12",
     "@hookform/resolvers": "^2.9.10",
+    "@xyflow/react": "^12.11.2",
     "apexcharts": "^3.40.0",
     "classnames": "^2.3.2",
     "dayjs": "^1.11.6",
@@ -49,6 +51,7 @@
   },
   "devDependencies": {
     "@chakra-ui/cli": "^2.3.0",
+    "@playwright/test": "^1.61.1",
     "@types/jsoneditor": "^9.9.0",
     "@types/lodash.debounce": "^4.0.7",
     "@types/react": "^18.0.17",
