@@ -67,6 +67,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('app/dashboard/package-lock.json') }}
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run dashboard e2e
+        run: npm run test:e2e
+
       - name: Build dashboard
         run: VITE_BASE_API=/api/ npm run build --if-present -- --outDir build --assetsDir statics
 
