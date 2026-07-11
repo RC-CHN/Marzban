@@ -1,0 +1,25 @@
+services:
+  provisioner:
+    image: ubuntu:22.04
+    environment:
+      E2E_INSTALL_DEPS: "true"
+
+  node-a:
+    image: ubuntu:22.04
+    environment:
+      E2E_INSTALL_DEPS: "true"
+
+  node-b:
+    image: ubuntu:22.04
+    environment:
+      E2E_INSTALL_DEPS: "true"
+
+  node-c:
+    image: ubuntu:22.04
+    environment:
+      E2E_INSTALL_DEPS: "true"
+
+  whoami:
+    image: ubuntu:22.04
+    environment:
+      E2E_INSTALL_DEPS: "true"

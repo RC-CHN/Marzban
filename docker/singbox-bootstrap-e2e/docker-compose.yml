@@ -9,6 +9,22 @@ x-e2e-proxy-env: &e2e-proxy-env
   no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
 
 services:
+  toolbox:
+    profiles: ["build"]
+    build:
+      context: .
+      dockerfile: Dockerfile.toolbox
+      args:
+        HTTP_PROXY: ${E2E_HTTP_PROXY:-}
+        HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
+        ALL_PROXY: ${E2E_ALL_PROXY:-}
+        NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+        http_proxy: ${E2E_HTTP_PROXY:-}
+        https_proxy: ${E2E_HTTPS_PROXY:-}
+        all_proxy: ${E2E_ALL_PROXY:-}
+        no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
+
   panel:
     build:
       context: ../..
@@ -42,7 +58,7 @@ services:
         ipv4_address: 172.30.10.2
 
   provisioner:
-    image: ubuntu:22.04
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
     environment:
       <<: *e2e-proxy-env
       PANEL_URL: https://panel:8000
@@ -57,7 +73,7 @@ services:
     command: ["/bin/bash", "/e2e/scripts/provision-panel.sh"]
 
   node-a:
-    image: ubuntu:22.04
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
     environment:
       <<: *e2e-proxy-env
       NODE_NAME: node-a
@@ -77,7 +93,7 @@ services:
     command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
 
   node-b:
-    image: ubuntu:22.04
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
     environment:
       <<: *e2e-proxy-env
       NODE_NAME: node-b
@@ -97,7 +113,7 @@ services:
     command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
 
   node-c:
-    image: ubuntu:22.04
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
     environment:
       <<: *e2e-proxy-env
       NODE_NAME: node-c
@@ -117,7 +133,7 @@ services:
     command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
 
   whoami:
-    image: ubuntu:22.04
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
     environment:
       <<: *e2e-proxy-env
     volumes:
@@ -130,9 +146,11 @@ services:
       - -lc
       - |
         set -euo pipefail
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get install -y --no-install-recommends python3
+        if [ "$${E2E_INSTALL_DEPS:-false}" = "true" ]; then
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends python3
+        fi
         exec python3 /poc/scripts/whoami.py
 
 networks:

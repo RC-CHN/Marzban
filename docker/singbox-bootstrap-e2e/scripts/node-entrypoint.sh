@@ -15,9 +15,11 @@ log() {
   printf '[bootstrap-e2e:%s] %s\n' "$NODE_NAME" "$*"
 }
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl
+if [ "${E2E_INSTALL_DEPS:-false}" = "true" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates curl
+fi
 
 command_path="$STATE_DIR/$NODE_NAME.sh"
 if [ ! -f "$command_path" ]; then

@@ -43,9 +43,11 @@ api() {
   fi
 }
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl jq
+if [ "${E2E_INSTALL_DEPS:-false}" = "true" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates curl jq
+fi
 
 log "waiting for panel"
 for _ in $(seq 1 90); do

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE=(docker compose -p marzban-singbox-bootstrap-e2e -f "$ROOT/docker-compose.yml")
+TOOLBOX_IMAGE="${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}"
 PROTOCOLS=(hysteria2 tuic anytls vmess vless trojan shadowsocks)
 EXPECTED_EXIT="172.30.10.12"
 SING_BOX_BIN="/opt/marzban-singbox/bin/sing-box"
@@ -14,6 +15,9 @@ if [ -n "${E2E_HTTP_PROXY:-}" ] && [ -z "${E2E_HTTPS_PROXY:-}" ]; then
   export E2E_HTTPS_PROXY="$E2E_HTTP_PROXY"
 fi
 export E2E_NO_PROXY="${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}"
+if [ "${E2E_CLEAN_ROOM:-0}" = "1" ]; then
+  COMPOSE+=(-f "$ROOT/docker-compose.clean-room.yml")
+fi
 
 cleanup() {
   local status=$?
@@ -27,7 +31,11 @@ cleanup() {
   done
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   if [ -d "$RUNTIME_DIR" ]; then
-    docker run --rm -v "$RUNTIME_DIR:/runtime" ubuntu:22.04 bash -lc 'rm -rf /runtime/*' >/dev/null 2>&1 || true
+    cleanup_image="$TOOLBOX_IMAGE"
+    if ! docker image inspect "$cleanup_image" >/dev/null 2>&1; then
+      cleanup_image="ubuntu:22.04"
+    fi
+    docker run --rm -v "$RUNTIME_DIR:/runtime" "$cleanup_image" bash -lc 'rm -rf /runtime/*' >/dev/null 2>&1 || true
     rmdir "$RUNTIME_DIR" >/dev/null 2>&1 || true
   fi
 }
@@ -39,6 +47,11 @@ test -x "$ROOT/../../sing-box-1.13.14-linux-amd64/sing-box"
 
 cleanup
 mkdir -p "$RUNTIME_DIR"
+if [ "${E2E_CLEAN_ROOM:-0}" != "1" ] && [ "${E2E_SKIP_TOOLBOX_BUILD:-0}" != "1" ]; then
+  "${COMPOSE[@]}" build toolbox
+elif [ "${E2E_CLEAN_ROOM:-0}" != "1" ]; then
+  echo "Skipping toolbox image build; using $TOOLBOX_IMAGE"
+fi
 if [ "${E2E_SKIP_PANEL_BUILD:-0}" != "1" ]; then
   "${COMPOSE[@]}" build panel
 else

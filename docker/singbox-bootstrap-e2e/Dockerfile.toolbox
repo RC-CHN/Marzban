@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+FROM ubuntu:22.04
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG all_proxy
+ARG no_proxy
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,id=singbox-e2e-toolbox-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=singbox-e2e-toolbox-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        dnsutils \
+        docker-compose \
+        docker.io \
+        iproute2 \
+        jq \
+        openssl \
+        python3 \
+        tar
+
+CMD ["bash"]
