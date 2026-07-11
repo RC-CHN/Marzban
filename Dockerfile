@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 ARG PYTHON_VERSION=3.12
 
 FROM python:$PYTHON_VERSION-slim AS build
@@ -6,13 +7,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /code
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl unzip gcc python3-dev libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,id=marzban-runtime-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=marzban-runtime-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends build-essential curl unzip gcc python3-dev libpq-dev
 
 COPY ./requirements.txt /code/
-RUN python3 -m pip install --upgrade pip setuptools==80.9.0 \
-    && pip install --no-cache-dir --upgrade -r /code/requirements.txt
+RUN --mount=type=cache,id=marzban-runtime-pip,target=/root/.cache/pip \
+    python3 -m pip install --upgrade pip setuptools==80.9.0 \
+    && pip install --upgrade -r /code/requirements.txt
 
 FROM python:$PYTHON_VERSION-slim
 

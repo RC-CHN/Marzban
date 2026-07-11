@@ -106,6 +106,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          cache-from: type=gha,scope=marzban-runtime
+          cache-to: type=gha,mode=max,scope=marzban-runtime
 
   bootstrap-e2e:
     name: Bootstrap e2e
@@ -116,5 +118,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build E2E toolbox
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/singbox-bootstrap-e2e
+          file: docker/singbox-bootstrap-e2e/Dockerfile.toolbox
+          load: true
+          tags: marzban-singbox-e2e-toolbox:ubuntu22.04
+          cache-from: type=gha,scope=singbox-e2e-toolbox
+          cache-to: type=gha,mode=max,scope=singbox-e2e-toolbox
+
+      - name: Build E2E panel
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/singbox-bootstrap-e2e/Dockerfile.panel
+          load: true
+          tags: marzban-bootstrap-e2e-panel:latest
+          cache-from: type=gha,scope=singbox-e2e-panel
+          cache-to: type=gha,mode=max,scope=singbox-e2e-panel
+
       - name: Run Docker bootstrap e2e
+        env:
+          E2E_SKIP_TOOLBOX_BUILD: "1"
+          E2E_SKIP_PANEL_BUILD: "1"
         run: bash docker/singbox-bootstrap-e2e/scripts/run-tests.sh

@@ -1,10 +1,13 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /code
 
-RUN apt-get update \
+RUN --mount=type=cache,id=singbox-e2e-panel-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=singbox-e2e-panel-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
         build-essential \
@@ -17,12 +20,12 @@ RUN apt-get update \
         libpq-dev \
         openssl \
         python3-dev \
-        tar \
-    && rm -rf /var/lib/apt/lists/*
+        tar
 
 COPY requirements.txt /code/
-RUN python3 -m pip install --upgrade pip setuptools==80.9.0 \
-    && pip install --no-cache-dir --upgrade -r /code/requirements.txt
+RUN --mount=type=cache,id=singbox-e2e-panel-pip,target=/root/.cache/pip \
+    python3 -m pip install --upgrade pip setuptools==80.9.0 \
+    && pip install --upgrade -r /code/requirements.txt
 
 COPY . /code
 COPY sing-box-1.13.14-linux-amd64/sing-box /usr/local/bin/sing-box
