@@ -28,6 +28,8 @@ from app.models.admin import Admin
 from app.models.singbox import (
     SingBoxDeploymentRequest,
     SingBoxDeploymentResponse,
+    SingBoxConnectionResponse,
+    SingBoxConnectionsReplace,
     SingBoxEnrollmentCreate,
     SingBoxEnrollmentResponse,
     SingBoxNodeEnrollRequest,
@@ -46,6 +48,8 @@ from app.models.singbox import (
     SingBoxUserCreate,
     SingBoxUserPolicyModify,
     SingBoxUserPolicyResponse,
+    SingBoxUserSummaryResponse,
+    SingBoxUserWorkspaceResponse,
 )
 from app.models.user import UserStatus
 from app.models.node import NodeStatus
@@ -104,6 +108,38 @@ def _user_policy_response(user: User, credential) -> SingBoxUserPolicyResponse:
         public_subscription=_public_subscription_links(credential.subscription_token)
         if credential.subscription_token
         else None,
+    )
+
+
+def _connection_response(connection) -> SingBoxConnectionResponse:
+    return SingBoxConnectionResponse(
+        id=connection.id,
+        label=connection.label,
+        protocol=connection.protocol,
+        entry_node_id=connection.entry_node_id,
+        entry_node_name=connection.entry_node.name,
+        exit_node_id=connection.exit_node_id,
+        exit_node_name=connection.exit_node.name if connection.exit_node else None,
+        enabled=connection.enabled,
+        sort_order=connection.sort_order,
+        created_at=connection.created_at,
+        updated_at=connection.updated_at,
+    )
+
+
+def _user_workspace_response(db: Session, user: User) -> SingBoxUserWorkspaceResponse:
+    credential = production.ensure_user_credentials(db, user)
+    return SingBoxUserWorkspaceResponse(
+        username=user.username,
+        status=user.status.value,
+        data_limit=user.data_limit,
+        used_traffic=user.used_traffic or 0,
+        expire=user.expire,
+        connections=[
+            _connection_response(connection)
+            for connection in production.get_user_connections(db, user)
+        ],
+        public_subscription=_public_subscription_links(credential.subscription_token),
     )
 
 
@@ -237,6 +273,10 @@ def enroll_node(
         raise HTTPException(status_code=400, detail="Enrollment token does not match this node")
 
     try:
+        if payload.node_link_port is not None and payload.node_link_port != node.node_link_port:
+            node.node_link_port = payload.node_link_port
+            db.commit()
+            db.refresh(node)
         issued = singbox_ca.issue_node_certificate_from_csrs(
             node.name,
             node.public_host,
@@ -374,6 +414,18 @@ def get_node(
     return node
 
 
+@router.get("/nodes/{node_id}/protocol-impact")
+def get_node_protocol_impact(
+    node_id: int,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    node = production.get_node(db, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"node_id": node.id, "protocols": production.node_protocol_connection_counts(db, node.id)}
+
+
 @router.put("/nodes/{node_id}", response_model=SingBoxNodeResponse)
 def update_node(
     node_id: int,
@@ -437,7 +489,10 @@ def delete_node(
     node = production.get_node(db, node_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    production.delete_node(db, node)
+    try:
+        production.delete_node(db, node)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {}
 
 
@@ -575,6 +630,28 @@ def get_user_policy(
     return _user_policy_response(user, credential)
 
 
+@router.get("/users", response_model=list[SingBoxUserSummaryResponse])
+def list_singbox_users(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    users = db.query(User).order_by(User.username).all()
+    return [
+        SingBoxUserSummaryResponse(
+            username=user.username,
+            status=user.status.value,
+            data_limit=user.data_limit,
+            used_traffic=user.used_traffic or 0,
+            expire=user.expire,
+            connection_count=len(user.singbox_connections),
+            public_subscription=_public_subscription_links(user.singbox_credentials.subscription_token)
+            if user.singbox_credentials and user.singbox_credentials.subscription_token
+            else None,
+        )
+        for user in users
+    ]
+
+
 @router.post("/users", response_model=SingBoxUserPolicyResponse)
 def create_singbox_user(
     payload: SingBoxUserCreate,
@@ -594,13 +671,51 @@ def create_singbox_user(
         db.add(user)
         db.commit()
         db.refresh(user)
-    credential = production.update_user_policy(
-        db,
-        user,
-        enabled_protocols=payload.enabled_protocols,
-        exit_node_id=payload.exit_node_id,
-    )
+    if payload.initialize_connections:
+        credential = production.update_user_policy(
+            db,
+            user,
+            enabled_protocols=payload.enabled_protocols,
+            exit_node_id=payload.exit_node_id,
+        )
+    else:
+        credential = production.ensure_user_credentials(db, user)
+        if payload.enabled_protocols is not None:
+            credential.enabled_protocols = list(payload.enabled_protocols)
+        credential.exit_node_id = payload.exit_node_id
+        db.commit()
+        db.refresh(credential)
     return _user_policy_response(user, credential)
+
+
+@router.get("/users/{username}/connections", response_model=SingBoxUserWorkspaceResponse)
+def get_user_connections(
+    username: str,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    user = crud.get_user(db, username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _user_workspace_response(db, user)
+
+
+@router.put("/users/{username}/connections", response_model=SingBoxUserWorkspaceResponse)
+def replace_user_connections(
+    username: str,
+    payload: SingBoxConnectionsReplace,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    user = crud.get_user(db, username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        production.replace_user_connections(db, user, payload.connections)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _user_workspace_response(db, user)
 
 
 @router.put("/users/{username}/policy", response_model=SingBoxUserPolicyResponse)

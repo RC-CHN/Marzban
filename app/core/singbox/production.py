@@ -31,10 +31,16 @@ from app.db.models import (
     SingBoxNodeUsage,
     SingBoxRoutePolicy,
     SingBoxUserCredential,
+    SingBoxUserConnection,
     User,
 )
 from app.models.node import NodeStatus
-from app.models.singbox import SingBoxNodeCreate, SingBoxNodeModify, SingBoxProtocol
+from app.models.singbox import (
+    SingBoxConnectionWrite,
+    SingBoxNodeCreate,
+    SingBoxNodeModify,
+    SingBoxProtocol,
+)
 from app.models.user import UserStatus
 from config import (
     SINGBOX_NODE_LINK_CA_CERT_PATH,
@@ -69,6 +75,22 @@ def get_node_by_name(db: Session, name: str) -> DBSingBoxNode | None:
     return db.query(DBSingBoxNode).filter(DBSingBoxNode.name == name).first()
 
 
+def node_protocol_connection_counts(db: Session, node_id: int) -> dict[str, int]:
+    counts = {protocol: 0 for protocol in SUPPORTED_PROTOCOLS}
+    rows = (
+        db.query(SingBoxUserConnection.protocol, SingBoxUserConnection.id)
+        .filter(
+            SingBoxUserConnection.entry_node_id == node_id,
+            SingBoxUserConnection.enabled.is_(True),
+        )
+        .all()
+    )
+    for protocol, _ in rows:
+        if protocol in counts:
+            counts[protocol] += 1
+    return counts
+
+
 def issue_node_sync_token(db: Session, node: DBSingBoxNode) -> str:
     token = secrets.token_urlsafe(32)
     node.sync_token_hash = _token_hash(token)
@@ -94,6 +116,11 @@ def create_node(db: Session, payload: SingBoxNodeCreate) -> DBSingBoxNode:
         exit_enabled=payload.exit_enabled,
         node_link_port=payload.node_link_port,
         public_ports=_ports_dict(payload.public_ports),
+        protocol_settings=(
+            _settings_dict(payload.protocol_settings)
+            if "protocol_settings" in payload.model_fields_set
+            else None
+        ),
         deploy_method=payload.deploy_method,
         ssh_host=payload.ssh_host,
         ssh_user=payload.ssh_user,
@@ -127,6 +154,8 @@ def update_node(db: Session, dbnode: DBSingBoxNode, payload: SingBoxNodeModify) 
     for field_name, value in payload.model_dump(exclude_unset=True).items():
         if field_name == "public_ports":
             setattr(dbnode, field_name, _ports_dict(value))
+        elif field_name == "protocol_settings":
+            setattr(dbnode, field_name, _settings_dict(value))
         else:
             setattr(dbnode, field_name, value)
     dbnode.updated_at = datetime.utcnow()
@@ -137,6 +166,31 @@ def update_node(db: Session, dbnode: DBSingBoxNode, payload: SingBoxNodeModify) 
 
 
 def delete_node(db: Session, dbnode: DBSingBoxNode) -> None:
+    connection_count = (
+        db.query(SingBoxUserConnection)
+        .filter(
+            (SingBoxUserConnection.entry_node_id == dbnode.id)
+            | (SingBoxUserConnection.exit_node_id == dbnode.id)
+        )
+        .count()
+    )
+    legacy_user_count = (
+        db.query(SingBoxUserCredential)
+        .filter(SingBoxUserCredential.exit_node_id == dbnode.id)
+        .count()
+    )
+    if connection_count or legacy_user_count:
+        references = []
+        if connection_count:
+            references.append(f"{connection_count} connection(s)")
+        if legacy_user_count:
+            references.append(f"{legacy_user_count} legacy user policy/policies")
+        raise ValueError(f'Node "{dbnode.name}" is used by {" and ".join(references)}')
+
+    db.query(SingBoxRoutePolicy).filter(
+        (SingBoxRoutePolicy.entry_node_id == dbnode.id)
+        | (SingBoxRoutePolicy.exit_node_id == dbnode.id)
+    ).delete(synchronize_session=False)
     db.delete(dbnode)
     db.commit()
     rebuild_full_mesh_links(db)
@@ -284,6 +338,31 @@ def update_user_policy(
     db.commit()
     db.refresh(credential)
     rebuild_route_policies_for_user(db, user)
+    existing_connections = get_user_connections(db, user)
+    existing_by_entry_protocol = {
+        (connection.entry_node_id, connection.protocol): connection
+        for connection in existing_connections
+    }
+    default_connections = []
+    for entry in get_nodes(db):
+        if not entry.entry_enabled:
+            continue
+        for protocol in _protocols(credential.enabled_protocols):
+            existing = existing_by_entry_protocol.get((entry.id, protocol))
+            default_connections.append(
+                SingBoxConnectionWrite(
+                    id=existing.id if existing else None,
+                    label=existing.label if existing else None,
+                    protocol=protocol,
+                    entry_node_id=entry.id,
+                    exit_node_id=credential.exit_node_id
+                    if credential.exit_node_id != entry.id
+                    else None,
+                    enabled=existing.enabled if existing else True,
+                    sort_order=existing.sort_order if existing else len(default_connections) * 100,
+                )
+            )
+    replace_user_connections(db, user, default_connections)
     db.refresh(credential)
     return credential
 
@@ -333,10 +412,74 @@ def rebuild_all_route_policies(db: Session) -> None:
         rebuild_route_policies_for_user(db, credential.user)
 
 
+def get_user_connections(db: Session, user: User) -> list[SingBoxUserConnection]:
+    return (
+        db.query(SingBoxUserConnection)
+        .filter(SingBoxUserConnection.user_id == user.id)
+        .order_by(SingBoxUserConnection.sort_order, SingBoxUserConnection.id)
+        .all()
+    )
+
+
+def replace_user_connections(
+    db: Session,
+    user: User,
+    payloads: list[SingBoxConnectionWrite],
+) -> list[SingBoxUserConnection]:
+    ensure_user_credentials(db, user)
+    existing = {connection.id: connection for connection in get_user_connections(db, user)}
+    seen_ids: set[int] = set()
+
+    for payload in payloads:
+        entry = get_node(db, payload.entry_node_id)
+        if not entry or (payload.enabled and not entry.entry_enabled):
+            raise ValueError("Entry node is missing or does not accept public connections")
+        exit_node = get_node(db, payload.exit_node_id) if payload.exit_node_id is not None else None
+        if payload.exit_node_id is not None and (
+            not exit_node or (payload.enabled and not exit_node.exit_enabled)
+        ):
+            raise ValueError("Exit node is missing or is not enabled as an exit")
+        if exit_node and exit_node.id == entry.id:
+            raise ValueError("Use Direct when the entry and exit node are the same")
+        if payload.id is not None:
+            connection = existing.get(payload.id)
+            if connection is None:
+                raise ValueError("Connection does not belong to this user")
+            seen_ids.add(connection.id)
+        else:
+            connection = _new_connection(user.id)
+            db.add(connection)
+
+        connection.entry_node_id = entry.id
+        connection.exit_node_id = exit_node.id if exit_node else None
+        connection.protocol = payload.protocol
+        connection.label = (payload.label or "").strip() or _connection_label(
+            entry.name,
+            exit_node.name if exit_node else None,
+            payload.protocol,
+        )
+        connection.enabled = payload.enabled
+        connection.sort_order = payload.sort_order
+        connection.updated_at = datetime.utcnow()
+
+    for connection_id, connection in existing.items():
+        if connection_id not in seen_ids:
+            db.delete(connection)
+    db.commit()
+    return get_user_connections(db, user)
+
+
 def build_builder(db: Session) -> SingBoxConfigBuilder:
     dbnodes = get_nodes(db)
     nodes = {_node.name: _builder_node(_node) for _node in dbnodes}
-    users = [_builder_user(credential) for credential in _active_credentials(db)]
+    active_connections = _active_connections(db)
+    connection_user_ids = {connection.user_id for connection in active_connections}
+    users = [_builder_connection(connection) for connection in active_connections]
+    users.extend(
+        _builder_user(credential)
+        for credential in _active_credentials(db)
+        if credential.user_id not in connection_user_ids
+    )
     links = [_builder_link(link) for link in db.query(SingBoxNodeLink).all()]
     policies = _route_policies(db)
     return SingBoxConfigBuilder(
@@ -369,21 +512,39 @@ def build_user_subscription(
     config_format: str = "sing-box",
 ) -> str | dict:
     from app.core.singbox.subscription import (
-        build_clash_subscription,
-        build_singbox_subscription,
-        build_v2rayn_subscription,
+        SubscriptionTarget,
+        build_clash_connection_subscription,
+        build_singbox_connection_subscription,
+        build_v2rayn_connection_subscription,
     )
 
-    credential = ensure_user_credentials(db, user)
+    ensure_user_credentials(db, user)
     builder = build_builder(db)
-    entry_node = _select_entry_node(db, entry_node_id)
-    protocols = _protocols(credential.enabled_protocols)
-    singbox_user = _builder_user(credential)
+    connections = [
+        connection
+        for connection in get_user_connections(db, user)
+        if connection.enabled
+        and connection.entry_node
+        and connection.entry_node.entry_enabled
+        and (entry_node_id is None or connection.entry_node_id == entry_node_id)
+    ]
+    if not connections:
+        raise ValueError("User has no enabled sing-box connections")
+    targets = [
+        SubscriptionTarget(
+            tag=f"connection-{connection.id}",
+            name=connection.label,
+            entry_node=connection.entry_node.name,
+            protocol=_protocol(connection.protocol),
+            user=_builder_connection(connection),
+        )
+        for connection in connections
+    ]
     if config_format in {"clash", "clash-meta"}:
-        return build_clash_subscription(builder, entry_node.name, singbox_user, protocols)
+        return build_clash_connection_subscription(builder, targets)
     if config_format in {"v2rayn", "v2ray"}:
-        return build_v2rayn_subscription(builder, entry_node.name, singbox_user, protocols)
-    return build_singbox_subscription(builder, entry_node.name, singbox_user, protocols)
+        return build_v2rayn_connection_subscription(builder, targets)
+    return build_singbox_connection_subscription(builder, targets)
 
 
 def build_node_upgrade_instruction(
@@ -482,9 +643,45 @@ def _active_credentials(db: Session) -> Iterable[SingBoxUserCredential]:
     )
 
 
+def _active_connections(db: Session) -> list[SingBoxUserConnection]:
+    connections = (
+        db.query(SingBoxUserConnection)
+        .join(User)
+        .filter(
+            User.status == UserStatus.active,
+            SingBoxUserConnection.enabled.is_(True),
+        )
+        .order_by(SingBoxUserConnection.sort_order, SingBoxUserConnection.id)
+        .all()
+    )
+    return [
+        connection
+        for connection in connections
+        if connection.entry_node
+        and connection.entry_node.entry_enabled
+        and (connection.exit_node is None or connection.exit_node.exit_enabled)
+    ]
+
+
 def _route_policies(db: Session) -> list[RoutePolicy]:
     policies = []
-    credential_user_ids = set()
+    connection_user_ids = set()
+    for connection in _active_connections(db):
+        if not connection.entry_node or not connection.entry_node.entry_enabled:
+            continue
+        if connection.exit_node and not connection.exit_node.exit_enabled:
+            continue
+        connection_user_ids.add(connection.user_id)
+        policies.append(
+            RoutePolicy(
+                entry_node=connection.entry_node.name,
+                auth_name=connection.auth_name,
+                exit_node=connection.exit_node.name if connection.exit_node else None,
+                protocol=_protocol(connection.protocol),
+            )
+        )
+
+    credential_user_ids = set(connection_user_ids)
     for policy in (
         db.query(SingBoxRoutePolicy)
         .filter(SingBoxRoutePolicy.enabled.is_(True))
@@ -494,6 +691,8 @@ def _route_policies(db: Session) -> list[RoutePolicy]:
             continue
         user = policy.user
         if not user or not user.singbox_credentials:
+            continue
+        if user.id in connection_user_ids:
             continue
         credential_user_ids.add(user.id)
         exit_node = policy.exit_node.name if policy.exit_node else None
@@ -528,6 +727,7 @@ def _builder_node(node: DBSingBoxNode) -> SingBoxNode:
         entry_enabled=node.entry_enabled,
         exit_enabled=node.exit_enabled,
         public_ports=_protocol_ports(node.public_ports),
+        protocol_settings=node.protocol_settings or {},
         public_tls_mode=node.public_tls_mode or _default_public_tls_mode(),
         public_tls_cert_path=node.public_tls_cert_path or SINGBOX_TLS_CERT_PATH,
         public_tls_key_path=node.public_tls_key_path or SINGBOX_TLS_KEY_PATH,
@@ -568,6 +768,43 @@ def _builder_user(credential: SingBoxUserCredential) -> SingBoxUser:
         ),
         protocols=_protocols(credential.enabled_protocols),
     )
+
+
+def _builder_connection(connection: SingBoxUserConnection) -> SingBoxUser:
+    return SingBoxUser(
+        auth_name=connection.auth_name,
+        credentials=SingBoxUserCredentials(
+            password=connection.password,
+            vmess_uuid=connection.vmess_uuid,
+            vless_uuid=connection.vless_uuid,
+            tuic_uuid=connection.tuic_uuid,
+            shadowsocks_password=connection.shadowsocks_password,
+        ),
+        protocols=(_protocol(connection.protocol),),
+        entry_node=connection.entry_node.name,
+    )
+
+
+def _new_connection(user_id: int) -> SingBoxUserConnection:
+    return SingBoxUserConnection(
+        user_id=user_id,
+        auth_name=f"u{user_id}-{secrets.token_hex(8)}",
+        password=_secret(24),
+        vmess_uuid=str(uuid.uuid4()),
+        vless_uuid=str(uuid.uuid4()),
+        tuic_uuid=str(uuid.uuid4()),
+        shadowsocks_password=_base64_secret(16),
+    )
+
+
+def _connection_label(entry_name: str, exit_name: str | None, protocol: str) -> str:
+    return f"{entry_name} -> {exit_name or 'Direct'} / {protocol}"
+
+
+def _protocol(value: str) -> Protocol:
+    if value not in SUPPORTED_PROTOCOLS:
+        raise ValueError(f"Unsupported sing-box protocol: {value}")
+    return value  # type: ignore[return-value]
 
 
 def _public_tls() -> TLSSettings:
@@ -629,6 +866,14 @@ def _ports_dict(value) -> dict | None:
     if isinstance(value, dict):
         return value
     return value.model_dump()
+
+
+def _settings_dict(value) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    return value.model_dump(exclude_none=True)
 
 
 def _secret(length: int) -> str:

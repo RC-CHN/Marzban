@@ -1,3 +1,4 @@
+import base64
 import unittest
 
 from sqlalchemy import create_engine
@@ -5,7 +6,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.singbox import production
 from app.db.base import Base
-from app.db.models import SingBoxUserCredential, User
+from app.db.models import SingBoxNode, SingBoxUserCredential, User
+from app.models.singbox import SingBoxConnectionWrite
 from app.models.user import UserStatus
 
 
@@ -71,6 +73,146 @@ class SingBoxProductionTest(unittest.TestCase):
         credential = production.ensure_user_credentials(self.db, user)
 
         self.assertTrue(credential.subscription_token)
+
+    def test_connections_support_same_entry_protocol_with_different_exits(self):
+        user = self._user()
+        nodes = [
+            SingBoxNode(name="entry", public_host="entry.example", entry_enabled=True, exit_enabled=True),
+            SingBoxNode(name="exit-a", public_host="exit-a.example", entry_enabled=False, exit_enabled=True),
+            SingBoxNode(name="exit-b", public_host="exit-b.example", entry_enabled=False, exit_enabled=True),
+        ]
+        self.db.add_all(nodes)
+        self.db.commit()
+
+        connections = production.replace_user_connections(
+            self.db,
+            user,
+            [
+                SingBoxConnectionWrite(
+                    label="Entry direct",
+                    protocol="hysteria2",
+                    entry_node_id=nodes[0].id,
+                    exit_node_id=None,
+                    sort_order=10,
+                ),
+                SingBoxConnectionWrite(
+                    label="Entry via A",
+                    protocol="hysteria2",
+                    entry_node_id=nodes[0].id,
+                    exit_node_id=nodes[1].id,
+                    sort_order=20,
+                ),
+                SingBoxConnectionWrite(
+                    label="Entry via B",
+                    protocol="hysteria2",
+                    entry_node_id=nodes[0].id,
+                    exit_node_id=nodes[2].id,
+                    sort_order=30,
+                ),
+            ],
+        )
+
+        self.assertEqual(len(connections), 3)
+        self.assertEqual(len({connection.auth_name for connection in connections}), 3)
+        self.assertEqual(len({connection.password for connection in connections}), 3)
+
+        builder = production.build_builder(self.db)
+        entry_users = builder.build_node_config("entry")["inbounds"][0]["users"]
+        self.assertEqual(len(entry_users), 3)
+        self.assertEqual(builder.build_node_config("exit-a")["inbounds"][0]["users"], [])
+        policies = [policy for policy in builder.route_policies if policy.entry_node == "entry"]
+        self.assertEqual({policy.exit_node for policy in policies}, {None, "exit-a", "exit-b"})
+        self.assertTrue(all(policy.protocol == "hysteria2" for policy in policies))
+
+        subscription = production.build_user_subscription(self.db, user, config_format="sing-box")
+        selector = subscription["outbounds"][0]
+        self.assertEqual(selector["outbounds"], [f"connection-{connection.id}" for connection in connections])
+        clash = production.build_user_subscription(self.db, user, config_format="clash")
+        self.assertIn('name: "Entry via A"', clash)
+        v2rayn = base64.b64decode(
+            production.build_user_subscription(self.db, user, config_format="v2rayn")
+        ).decode()
+        self.assertIn("#Entry%20via%20B", v2rayn)
+
+    def test_replace_connections_allows_duplicate_route_with_distinct_credentials(self):
+        user = self._user()
+        entry = SingBoxNode(name="entry", public_host="entry.example", entry_enabled=True)
+        self.db.add(entry)
+        self.db.commit()
+
+        payload = SingBoxConnectionWrite(protocol="vless", entry_node_id=entry.id)
+        connections = production.replace_user_connections(self.db, user, [payload, payload])
+
+        self.assertEqual(len(connections), 2)
+        self.assertNotEqual(connections[0].auth_name, connections[1].auth_name)
+        self.assertNotEqual(connections[0].vless_uuid, connections[1].vless_uuid)
+
+    def test_delete_node_rejects_referenced_connection(self):
+        user = self._user()
+        node = SingBoxNode(name="entry", public_host="entry.example", entry_enabled=True)
+        self.db.add(node)
+        self.db.commit()
+        production.replace_user_connections(
+            self.db,
+            user,
+            [SingBoxConnectionWrite(protocol="vless", entry_node_id=node.id)],
+        )
+
+        with self.assertRaisesRegex(ValueError, "1 connection"):
+            production.delete_node(self.db, node)
+
+        self.assertIsNotNone(production.get_node(self.db, node.id))
+
+    def test_delete_unused_node(self):
+        node = SingBoxNode(name="unused", public_host="unused.example")
+        self.db.add(node)
+        self.db.commit()
+        node_id = node.id
+
+        production.delete_node(self.db, node)
+
+        self.assertIsNone(production.get_node(self.db, node_id))
+
+    def test_legacy_policy_creates_default_connections_once(self):
+        user = self._user()
+        entry = SingBoxNode(name="entry", public_host="entry.example", entry_enabled=True)
+        exit_node = SingBoxNode(
+            name="exit",
+            public_host="exit.example",
+            entry_enabled=False,
+            exit_enabled=True,
+        )
+        self.db.add_all([entry, exit_node])
+        self.db.commit()
+
+        production.update_user_policy(
+            self.db,
+            user,
+            enabled_protocols=["hysteria2", "vless"],
+            exit_node_id=exit_node.id,
+        )
+
+        connections = production.get_user_connections(self.db, user)
+        self.assertEqual(len(connections), 2)
+        self.assertEqual({connection.protocol for connection in connections}, {"hysteria2", "vless"})
+        self.assertTrue(all(connection.exit_node_id == exit_node.id for connection in connections))
+        original_credentials = {
+            connection.protocol: (connection.id, connection.password) for connection in connections
+        }
+
+        production.update_user_policy(
+            self.db,
+            user,
+            enabled_protocols=["hysteria2", "vless"],
+            exit_node_id=None,
+        )
+
+        updated = production.get_user_connections(self.db, user)
+        self.assertTrue(all(connection.exit_node_id is None for connection in updated))
+        self.assertEqual(
+            {connection.protocol: (connection.id, connection.password) for connection in updated},
+            original_credentials,
+        )
 
     def test_node_upgrade_instruction_is_disabled_by_default(self):
         original_enabled = production.SINGBOX_NODE_AUTO_UPGRADE

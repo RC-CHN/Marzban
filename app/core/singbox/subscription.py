@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlencode
 
 from app.core.singbox.config import Protocol, SingBoxConfigBuilder, SingBoxUser
+
+
+@dataclass(frozen=True)
+class SubscriptionTarget:
+    tag: str
+    name: str
+    entry_node: str
+    protocol: Protocol
+    user: SingBoxUser
 
 
 def build_singbox_subscription(
@@ -16,10 +26,33 @@ def build_singbox_subscription(
 ) -> dict[str, Any]:
     """Build a sing-box client subscription with one outbound per entry protocol."""
 
+    targets = [
+        SubscriptionTarget(
+            tag=f"{entry_node}-{protocol}",
+            name=f"{entry_node}-{protocol}",
+            entry_node=entry_node,
+            protocol=protocol,
+            user=user,
+        )
+        for protocol in protocols
+    ]
+    return build_singbox_connection_subscription(builder, targets)
+
+
+def build_singbox_connection_subscription(
+    builder: SingBoxConfigBuilder,
+    targets: list[SubscriptionTarget],
+) -> dict[str, Any]:
+    """Build one selectable client config from independently routed connections."""
+
     outbounds = []
-    for protocol in protocols:
-        outbound = builder.build_client_config(protocol, entry_node, user)["outbounds"][0]
-        outbounds.append({**outbound, "tag": f"{entry_node}-{protocol}"})
+    for target in targets:
+        outbound = builder.build_client_config(
+            target.protocol,
+            target.entry_node,
+            target.user,
+        )["outbounds"][0]
+        outbounds.append({**outbound, "tag": target.tag})
     selector_tag = "select"
     return {
         "log": {"level": "info", "timestamp": True},
@@ -57,10 +90,31 @@ def build_clash_subscription(
     not intended to be a full production renderer.
     """
 
+    targets = [
+        SubscriptionTarget(
+            tag=f"{entry_node}-{protocol}",
+            name=f"{entry_node}-{protocol}",
+            entry_node=entry_node,
+            protocol=protocol,
+            user=user,
+        )
+        for protocol in protocols
+    ]
+    return build_clash_connection_subscription(builder, targets)
+
+
+def build_clash_connection_subscription(
+    builder: SingBoxConfigBuilder,
+    targets: list[SubscriptionTarget],
+) -> str:
     proxies = []
-    for protocol in protocols:
-        outbound = builder.build_client_config(protocol, entry_node, user)["outbounds"][0]
-        proxies.append(_clash_proxy_from_outbound(entry_node, outbound))
+    for target in targets:
+        outbound = builder.build_client_config(
+            target.protocol,
+            target.entry_node,
+            target.user,
+        )["outbounds"][0]
+        proxies.append(_clash_proxy_from_outbound(target.name, outbound))
 
     proxy_names = [proxy["name"] for proxy in proxies]
     doc = {
@@ -94,16 +148,36 @@ def build_v2rayn_subscription(
     imported node.
     """
 
+    targets = [
+        SubscriptionTarget(
+            tag=f"{entry_node}-{protocol}",
+            name=f"{entry_node}-{protocol}",
+            entry_node=entry_node,
+            protocol=protocol,
+            user=user,
+        )
+        for protocol in protocols
+    ]
+    return build_v2rayn_connection_subscription(builder, targets)
+
+
+def build_v2rayn_connection_subscription(
+    builder: SingBoxConfigBuilder,
+    targets: list[SubscriptionTarget],
+) -> str:
     links = []
-    for protocol in protocols:
-        outbound = builder.build_client_config(protocol, entry_node, user)["outbounds"][0]
-        links.append(_v2rayn_uri_from_outbound(entry_node, outbound))
+    for target in targets:
+        outbound = builder.build_client_config(
+            target.protocol,
+            target.entry_node,
+            target.user,
+        )["outbounds"][0]
+        links.append(_v2rayn_uri_from_outbound(target.name, outbound))
     return _base64("\n".join(links))
 
 
-def _clash_proxy_from_outbound(entry_node: str, outbound: dict[str, Any]) -> dict[str, Any]:
+def _clash_proxy_from_outbound(name: str, outbound: dict[str, Any]) -> dict[str, Any]:
     protocol = outbound["type"]
-    name = f"{entry_node}-{protocol}"
     base = {
         "name": name,
         "type": protocol,
@@ -164,9 +238,8 @@ def _clash_proxy_from_outbound(entry_node: str, outbound: dict[str, Any]) -> dic
     raise ValueError(f"Unsupported protocol for Clash subscription: {protocol}")
 
 
-def _v2rayn_uri_from_outbound(entry_node: str, outbound: dict[str, Any]) -> str:
+def _v2rayn_uri_from_outbound(name: str, outbound: dict[str, Any]) -> str:
     protocol = outbound["type"]
-    name = f"{entry_node}-{protocol}"
     server = _host_for_uri(outbound["server"])
     port = outbound["server_port"]
 

@@ -3,6 +3,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -209,6 +210,53 @@ class SingBoxConfigBuilderTest(unittest.TestCase):
         clash_doc = subscription.build_clash_subscription(builder, "node-a", user, SUPPORTED_PROTOCOLS)
         for protocol in SUPPORTED_PROTOCOLS:
             self.assertIn(f'"node-a-{protocol}"', clash_doc)
+
+    def test_node_protocol_profiles_apply_to_server_and_client(self):
+        builder = self._builder()
+        builder.nodes["node-a"] = replace(
+            builder.nodes["node-a"],
+            protocol_settings={
+                "hysteria2": {
+                    "up_mbps": 250,
+                    "down_mbps": 500,
+                    "ignore_client_bandwidth": False,
+                    "obfs_type": "salamander",
+                    "obfs_password": "hy2-obfs",
+                    "masquerade_url": "https://example.com",
+                },
+                "tuic": {
+                    "congestion_control": "cubic",
+                    "auth_timeout": "5s",
+                    "zero_rtt_handshake": False,
+                    "heartbeat": "15s",
+                },
+                "anytls": {
+                    "padding_scheme": ["stop=4", "0=16-32"],
+                    "idle_session_check_interval": "20s",
+                    "idle_session_timeout": "45s",
+                    "min_idle_session": 2,
+                },
+            },
+        )
+
+        inbounds = {
+            inbound["tag"]: inbound for inbound in builder.build_node_config("node-a")["inbounds"]
+        }
+        self.assertEqual(inbounds["public-hysteria2"]["up_mbps"], 250)
+        self.assertEqual(inbounds["public-hysteria2"]["obfs"]["password"], "hy2-obfs")
+        self.assertEqual(inbounds["public-hysteria2"]["masquerade"], "https://example.com")
+        self.assertEqual(inbounds["public-tuic"]["congestion_control"], "cubic")
+        self.assertEqual(inbounds["public-tuic"]["heartbeat"], "15s")
+        self.assertEqual(inbounds["public-anytls"]["padding_scheme"], ["stop=4", "0=16-32"])
+
+        user = self._user()
+        hy2 = builder.build_client_config("hysteria2", "node-a", user)["outbounds"][0]
+        tuic = builder.build_client_config("tuic", "node-a", user)["outbounds"][0]
+        anytls = builder.build_client_config("anytls", "node-a", user)["outbounds"][0]
+        self.assertEqual(hy2["obfs"]["password"], "hy2-obfs")
+        self.assertEqual(tuic["congestion_control"], "cubic")
+        self.assertEqual(anytls["idle_session_timeout"], "45s")
+        self.assertEqual(anytls["min_idle_session"], 2)
 
     def test_v2rayn_subscription_exports_each_supported_protocol(self):
         builder = self._builder()

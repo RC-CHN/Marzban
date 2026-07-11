@@ -618,6 +618,27 @@ check_public_ports_available() {
   IFS="$old_ifs"
 }
 
+select_node_link_port() {
+  local transport candidate
+  transport="$(node_link_transport_proto)"
+  validate_port "$NODE_LINK_PORT" || die "invalid node-link port: $NODE_LINK_PORT"
+  if ! port_in_use "$NODE_LINK_PORT" "$transport"; then
+    log "node-link port available: $NODE_LINK_PORT/$transport"
+    return
+  fi
+
+  candidate=$((NODE_LINK_PORT + 1))
+  while [ "$candidate" -le 65535 ]; do
+    if ! port_in_use "$candidate" "$transport"; then
+      log "node-link port $NODE_LINK_PORT/$transport is in use; selected $candidate/$transport"
+      NODE_LINK_PORT="$candidate"
+      return
+    fi
+    candidate=$((candidate + 1))
+  done
+  die "no free node-link port is available from $NODE_LINK_PORT to 65535"
+}
+
 check_ports() {
   if is_true "$SKIP_PORT_CHECK"; then
     log "port check skipped by --skip-port-check"
@@ -635,7 +656,7 @@ check_ports() {
   check_public_ports_available
   NODE_LINK_PROTOCOL="$(normalize_node_link_protocol "$NODE_LINK_PROTOCOL")" \
     || die "--node-link-protocol must be anytls or hysteria2"
-  check_port_available "node-link" "$NODE_LINK_PORT" "$(node_link_transport_proto)"
+  select_node_link_port
 }
 
 install_node() {
@@ -1212,6 +1233,7 @@ enroll_node() {
     --arg token "$ENROLL_TOKEN" \
     --arg node_name "$NODE_NAME" \
     --arg node_host "$NODE_HOST" \
+    --argjson node_link_port "$NODE_LINK_PORT" \
     --rawfile node_csr "$tmp_dir/node.csr" \
     --rawfile client_csr "$tmp_dir/client.csr" \
     --rawfile public_csr "$tmp_dir/public.csr" \
@@ -1219,6 +1241,7 @@ enroll_node() {
       token: $token,
       node_name: $node_name,
       node_host: $node_host,
+      node_link_port: $node_link_port,
       node_csr: $node_csr,
       client_csr: $client_csr,
       public_csr: $public_csr

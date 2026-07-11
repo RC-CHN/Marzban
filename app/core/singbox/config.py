@@ -58,6 +58,7 @@ class SingBoxNode:
     entry_enabled: bool = True
     exit_enabled: bool = True
     public_ports: ProtocolPorts | None = None
+    protocol_settings: dict[str, Any] | None = None
     public_tls_mode: PublicTLSMode = "ip-insecure"
     public_tls_cert_path: str | None = None
     public_tls_key_path: str | None = None
@@ -78,6 +79,7 @@ class SingBoxUser:
     auth_name: str
     credentials: SingBoxUserCredentials
     protocols: tuple[Protocol, ...] = SUPPORTED_PROTOCOLS
+    entry_node: str | None = None
 
     def supports(self, protocol: Protocol) -> bool:
         return protocol in self.protocols
@@ -98,6 +100,7 @@ class RoutePolicy:
     entry_node: str
     auth_name: str
     exit_node: str | None
+    protocol: Protocol | None = None
 
 
 @dataclass(frozen=True)
@@ -224,20 +227,30 @@ class SingBoxConfigBuilder:
         ]
 
     def _hysteria2_inbound(self, node: SingBoxNode) -> dict[str, Any]:
-        return {
+        settings = self._protocol_settings(node, "hysteria2")
+        inbound: dict[str, Any] = {
             "type": "hysteria2",
             "tag": "public-hysteria2",
             "listen": "::",
             "listen_port": self._port(node, "hysteria2"),
             "users": [
                 {"name": user.auth_name, "password": user.credentials.password}
-                for user in self._users_for("hysteria2")
+                for user in self._users_for("hysteria2", node.name)
             ],
-            "ignore_client_bandwidth": True,
+            "ignore_client_bandwidth": settings.get("ignore_client_bandwidth", True),
             "tls": self._public_server_tls(node),
         }
+        for field_name in ("up_mbps", "down_mbps"):
+            if settings.get(field_name) is not None:
+                inbound[field_name] = settings[field_name]
+        if settings.get("obfs_type") == "salamander":
+            inbound["obfs"] = {"type": "salamander", "password": settings["obfs_password"]}
+        if settings.get("masquerade_url"):
+            inbound["masquerade"] = settings["masquerade_url"]
+        return inbound
 
     def _tuic_inbound(self, node: SingBoxNode) -> dict[str, Any]:
+        settings = self._protocol_settings(node, "tuic")
         return {
             "type": "tuic",
             "tag": "public-tuic",
@@ -249,25 +262,31 @@ class SingBoxConfigBuilder:
                     "uuid": self._require(user.credentials.tuic_uuid, user.auth_name, "tuic_uuid"),
                     "password": user.credentials.password,
                 }
-                for user in self._users_for("tuic")
+                for user in self._users_for("tuic", node.name)
             ],
-            "congestion_control": "bbr",
-            "zero_rtt_handshake": False,
+            "congestion_control": settings.get("congestion_control", "bbr"),
+            "auth_timeout": settings.get("auth_timeout", "3s"),
+            "zero_rtt_handshake": settings.get("zero_rtt_handshake", False),
+            "heartbeat": settings.get("heartbeat", "10s"),
             "tls": self._public_server_tls(node),
         }
 
     def _anytls_inbound(self, node: SingBoxNode) -> dict[str, Any]:
-        return {
+        settings = self._protocol_settings(node, "anytls")
+        inbound: dict[str, Any] = {
             "type": "anytls",
             "tag": "public-anytls",
             "listen": "::",
             "listen_port": self._port(node, "anytls"),
             "users": [
                 {"name": user.auth_name, "password": user.credentials.password}
-                for user in self._users_for("anytls")
+                for user in self._users_for("anytls", node.name)
             ],
             "tls": self._public_server_tls(node),
         }
+        if settings.get("padding_scheme") is not None:
+            inbound["padding_scheme"] = settings["padding_scheme"]
+        return inbound
 
     def _vmess_inbound(self, node: SingBoxNode) -> dict[str, Any]:
         return {
@@ -281,7 +300,7 @@ class SingBoxConfigBuilder:
                     "uuid": self._require(user.credentials.vmess_uuid, user.auth_name, "vmess_uuid"),
                     "alterId": 0,
                 }
-                for user in self._users_for("vmess")
+                for user in self._users_for("vmess", node.name)
             ],
         }
 
@@ -297,7 +316,7 @@ class SingBoxConfigBuilder:
                     "uuid": self._require(user.credentials.vless_uuid, user.auth_name, "vless_uuid"),
                     "flow": "",
                 }
-                for user in self._users_for("vless")
+                for user in self._users_for("vless", node.name)
             ],
         }
 
@@ -309,7 +328,7 @@ class SingBoxConfigBuilder:
             "listen_port": self._port(node, "trojan"),
             "users": [
                 {"name": user.auth_name, "password": user.credentials.password}
-                for user in self._users_for("trojan")
+                for user in self._users_for("trojan", node.name)
             ],
             "tls": self._public_server_tls(node),
         }
@@ -331,7 +350,7 @@ class SingBoxConfigBuilder:
                         "shadowsocks_password",
                     ),
                 }
-                for user in self._users_for("shadowsocks")
+                for user in self._users_for("shadowsocks", node.name)
             ],
         }
 
@@ -406,9 +425,10 @@ class SingBoxConfigBuilder:
                 continue
             if not policy.exit_node or policy.exit_node == node_name:
                 continue
+            inbound_tags = [f"public-{policy.protocol}"] if policy.protocol else public_tags
             rules.append(
                 {
-                    "inbound": public_tags,
+                    "inbound": inbound_tags,
                     "auth_user": [policy.auth_name],
                     "action": "route",
                     "outbound": f"exit-{policy.exit_node}",
@@ -425,7 +445,8 @@ class SingBoxConfigBuilder:
         entry_node = self._node(entry_node_name)
         credentials = user.credentials
         if protocol == "hysteria2":
-            return {
+            settings = self._protocol_settings(entry_node, "hysteria2")
+            outbound: dict[str, Any] = {
                 "type": "hysteria2",
                 "tag": "proxy",
                 "server": entry_node.public_host,
@@ -433,7 +454,11 @@ class SingBoxConfigBuilder:
                 "password": credentials.password,
                 "tls": self._public_client_tls(entry_node),
             }
+            if settings.get("obfs_type") == "salamander":
+                outbound["obfs"] = {"type": "salamander", "password": settings["obfs_password"]}
+            return outbound
         if protocol == "tuic":
+            settings = self._protocol_settings(entry_node, "tuic")
             return {
                 "type": "tuic",
                 "tag": "proxy",
@@ -441,16 +466,22 @@ class SingBoxConfigBuilder:
                 "server_port": self._port(entry_node, "tuic"),
                 "uuid": self._require(credentials.tuic_uuid, user.auth_name, "tuic_uuid"),
                 "password": credentials.password,
-                "congestion_control": "bbr",
+                "congestion_control": settings.get("congestion_control", "bbr"),
+                "zero_rtt_handshake": settings.get("zero_rtt_handshake", False),
+                "heartbeat": settings.get("heartbeat", "10s"),
                 "tls": self._public_client_tls(entry_node),
             }
         if protocol == "anytls":
+            settings = self._protocol_settings(entry_node, "anytls")
             return {
                 "type": "anytls",
                 "tag": "proxy",
                 "server": entry_node.public_host,
                 "server_port": self._port(entry_node, "anytls"),
                 "password": credentials.password,
+                "idle_session_check_interval": settings.get("idle_session_check_interval", "30s"),
+                "idle_session_timeout": settings.get("idle_session_timeout", "30s"),
+                "min_idle_session": settings.get("min_idle_session", 0),
                 "tls": self._public_client_tls(entry_node),
             }
         if protocol == "vmess":
@@ -501,8 +532,12 @@ class SingBoxConfigBuilder:
             }
         raise ValueError(f"Unsupported protocol: {protocol}")
 
-    def _users_for(self, protocol: Protocol) -> Iterable[SingBoxUser]:
-        return (user for user in self.users if user.supports(protocol))
+    def _users_for(self, protocol: Protocol, node_name: str) -> Iterable[SingBoxUser]:
+        return (
+            user
+            for user in self.users
+            if user.supports(protocol) and (user.entry_node is None or user.entry_node == node_name)
+        )
 
     def _node(self, node_name: str) -> SingBoxNode:
         try:
@@ -513,6 +548,10 @@ class SingBoxConfigBuilder:
     def _port(self, node: SingBoxNode, protocol: Protocol) -> int:
         ports = node.public_ports or self.ports
         return ports.get(protocol)
+
+    @staticmethod
+    def _protocol_settings(node: SingBoxNode, protocol: Protocol) -> dict[str, Any]:
+        return dict((node.protocol_settings or {}).get(protocol) or {})
 
     def _server_tls(self, tls: TLSSettings | None) -> dict[str, Any]:
         tls = tls or self.public_tls or TLSSettings()

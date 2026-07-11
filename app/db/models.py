@@ -106,6 +106,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    singbox_connections = relationship(
+        "SingBoxUserConnection",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
     @hybrid_property
     def reseted_usage(self) -> int:
@@ -353,6 +358,7 @@ class SingBoxNode(Base):
     exit_enabled = Column(Boolean, nullable=False, default=True, server_default='1')
     node_link_port = Column(Integer, nullable=False, default=12443, server_default='12443')
     public_ports = Column(JSON, nullable=True)
+    protocol_settings = Column(JSON, nullable=True)
     deploy_method = Column(String(32), nullable=False, default="manual", server_default="manual")
     ssh_host = Column(String(256), nullable=True)
     ssh_user = Column(String(64), nullable=True)
@@ -399,6 +405,10 @@ class SingBoxNode(Base):
     @property
     def sync_enabled(self) -> bool:
         return bool(self.sync_token_hash)
+
+    @property
+    def protocol_settings_customized(self) -> bool:
+        return bool(self.protocol_settings)
 
 
 class SingBoxEnrollmentToken(Base):
@@ -473,6 +483,31 @@ class SingBoxRoutePolicy(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
+    entry_node = relationship("SingBoxNode", foreign_keys=[entry_node_id])
+    exit_node = relationship("SingBoxNode", foreign_keys=[exit_node_id])
+
+
+class SingBoxUserConnection(Base):
+    __tablename__ = "singbox_user_connections"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    entry_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    exit_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=True)
+    protocol = Column(String(32), nullable=False)
+    label = Column(String(128), nullable=False)
+    auth_name = Column(String(128), nullable=False, unique=True)
+    password = Column(String(256), nullable=False)
+    vmess_uuid = Column(String(36), nullable=True)
+    vless_uuid = Column(String(36), nullable=True)
+    tuic_uuid = Column(String(36), nullable=True)
+    shadowsocks_password = Column(String(256), nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default='1')
+    sort_order = Column(Integer, nullable=False, default=100, server_default='100')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="singbox_connections")
     entry_node = relationship("SingBoxNode", foreign_keys=[entry_node_id])
     exit_node = relationship("SingBoxNode", foreign_keys=[exit_node_id])
 

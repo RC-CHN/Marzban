@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.node import NodeStatus
 
@@ -50,13 +50,62 @@ class _SingBoxNodeMessagePayload(BaseModel):
 
 
 class SingBoxProtocolPorts(BaseModel):
-    hysteria2: int = 11001
-    tuic: int = 11002
-    anytls: int = 11003
-    vmess: int = 11004
-    vless: int = 11005
-    trojan: int = 11006
-    shadowsocks: int = 11007
+    hysteria2: int = Field(default=11001, ge=1, le=65535)
+    tuic: int = Field(default=11002, ge=1, le=65535)
+    anytls: int = Field(default=11003, ge=1, le=65535)
+    vmess: int = Field(default=11004, ge=1, le=65535)
+    vless: int = Field(default=11005, ge=1, le=65535)
+    trojan: int = Field(default=11006, ge=1, le=65535)
+    shadowsocks: int = Field(default=11007, ge=1, le=65535)
+
+    @model_validator(mode="after")
+    def validate_unique_ports(self):
+        values = [getattr(self, protocol) for protocol in SUPPORTED_SINGBOX_PROTOCOLS]
+        if len(values) != len(set(values)):
+            raise ValueError("Public protocol ports must be unique on a node")
+        return self
+
+
+class SingBoxHysteria2Settings(BaseModel):
+    up_mbps: int | None = Field(default=None, ge=1, le=100000)
+    down_mbps: int | None = Field(default=None, ge=1, le=100000)
+    ignore_client_bandwidth: bool = True
+    obfs_type: Literal["none", "salamander"] = "none"
+    obfs_password: str | None = Field(default=None, max_length=256)
+    masquerade_url: str | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_obfs(self):
+        if self.obfs_type == "salamander" and not self.obfs_password:
+            raise ValueError("Hysteria2 Salamander obfs requires a password")
+        return self
+
+
+class SingBoxTUICSettings(BaseModel):
+    congestion_control: Literal["cubic", "new_reno", "bbr"] = "bbr"
+    auth_timeout: str = Field(default="3s", pattern=r"^[1-9][0-9]*(ms|s|m)$")
+    zero_rtt_handshake: bool = False
+    heartbeat: str = Field(default="10s", pattern=r"^[1-9][0-9]*(ms|s|m)$")
+
+
+class SingBoxAnyTLSSettings(BaseModel):
+    padding_scheme: list[str] | None = Field(default=None, max_length=64)
+    idle_session_check_interval: str = Field(default="30s", pattern=r"^[1-9][0-9]*(ms|s|m)$")
+    idle_session_timeout: str = Field(default="30s", pattern=r"^[1-9][0-9]*(ms|s|m)$")
+    min_idle_session: int = Field(default=0, ge=0, le=1024)
+
+    @field_validator("padding_scheme")
+    @classmethod
+    def validate_padding_scheme(cls, value: list[str] | None):
+        if value is not None and any(not line.strip() or len(line) > 256 for line in value):
+            raise ValueError("AnyTLS padding lines must be non-empty and at most 256 characters")
+        return value
+
+
+class SingBoxProtocolSettings(BaseModel):
+    hysteria2: SingBoxHysteria2Settings = Field(default_factory=SingBoxHysteria2Settings)
+    tuic: SingBoxTUICSettings = Field(default_factory=SingBoxTUICSettings)
+    anytls: SingBoxAnyTLSSettings = Field(default_factory=SingBoxAnyTLSSettings)
 
 
 class SingBoxNodeBase(BaseModel):
@@ -66,6 +115,7 @@ class SingBoxNodeBase(BaseModel):
     exit_enabled: bool = True
     node_link_port: int = Field(default=12443, ge=1, le=65535)
     public_ports: SingBoxProtocolPorts | None = None
+    protocol_settings: SingBoxProtocolSettings = Field(default_factory=SingBoxProtocolSettings)
     deploy_method: Literal["manual", "local", "ssh"] = "manual"
     ssh_host: str | None = None
     ssh_user: str | None = None
@@ -84,6 +134,11 @@ class SingBoxNodeBase(BaseModel):
     node_link_mtls_enabled: bool = True
     usage_coefficient: float = Field(default=1.0, gt=0)
 
+    @field_validator("protocol_settings", mode="before")
+    @classmethod
+    def normalize_protocol_settings(cls, value):
+        return value or {}
+
 
 class SingBoxNodeCreate(SingBoxNodeBase):
     rebuild_links: bool = True
@@ -96,6 +151,7 @@ class SingBoxNodeModify(BaseModel):
     exit_enabled: bool | None = None
     node_link_port: int | None = Field(default=None, ge=1, le=65535)
     public_ports: SingBoxProtocolPorts | None = None
+    protocol_settings: SingBoxProtocolSettings | None = None
     deploy_method: Literal["manual", "local", "ssh"] | None = None
     ssh_host: str | None = None
     ssh_user: str | None = None
@@ -122,6 +178,7 @@ class SingBoxNodeResponse(SingBoxNodeBase):
     version: str | None = None
     message: str | None = None
     sync_enabled: bool | None = None
+    protocol_settings_customized: bool = False
     last_config_hash: str | None = None
     applied_config_hash: str | None = None
     last_seen_at: datetime | None = None
@@ -154,6 +211,7 @@ class SingBoxUserCreate(BaseModel):
     exit_node_id: int | None = None
     data_limit: int | None = Field(default=0, ge=0)
     expire: int | None = 0
+    initialize_connections: bool = True
 
 
 class SingBoxSubscriptionLinks(BaseModel):
@@ -161,6 +219,54 @@ class SingBoxSubscriptionLinks(BaseModel):
     singbox: str
     clash: str
     v2rayn: str
+
+
+class SingBoxConnectionWrite(BaseModel):
+    id: int | None = None
+    label: str | None = Field(default=None, max_length=128)
+    protocol: SingBoxProtocol
+    entry_node_id: int
+    exit_node_id: int | None = None
+    enabled: bool = True
+    sort_order: int = Field(default=100, ge=0, le=100000)
+
+
+class SingBoxConnectionResponse(BaseModel):
+    id: int
+    label: str
+    protocol: SingBoxProtocol
+    entry_node_id: int
+    entry_node_name: str
+    exit_node_id: int | None = None
+    exit_node_name: str | None = None
+    enabled: bool
+    sort_order: int
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SingBoxConnectionsReplace(BaseModel):
+    connections: list[SingBoxConnectionWrite]
+
+
+class SingBoxUserWorkspaceResponse(BaseModel):
+    username: str
+    status: str
+    data_limit: int | None = None
+    used_traffic: int = 0
+    expire: int | None = None
+    connections: list[SingBoxConnectionResponse]
+    public_subscription: SingBoxSubscriptionLinks
+
+
+class SingBoxUserSummaryResponse(BaseModel):
+    username: str
+    status: str
+    data_limit: int | None = None
+    used_traffic: int = 0
+    expire: int | None = None
+    connection_count: int = 0
+    public_subscription: SingBoxSubscriptionLinks | None = None
 
 
 class SingBoxUserPolicyResponse(BaseModel):
@@ -203,6 +309,7 @@ class SingBoxNodeEnrollRequest(BaseModel):
     token: str = Field(min_length=16)
     node_name: str = Field(min_length=1, max_length=256)
     node_host: str = Field(min_length=1, max_length=256)
+    node_link_port: int | None = Field(default=None, ge=1, le=65535)
     node_csr: str = Field(min_length=1)
     client_csr: str = Field(min_length=1)
     public_csr: str = Field(min_length=1)
