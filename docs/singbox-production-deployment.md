@@ -946,8 +946,8 @@ GET  /api/singbox/sync-agent.sh
 
 ```env
 SINGBOX_NODE_AUTO_UPGRADE=false
-SINGBOX_NODE_TARGET_IMAGE=ghcr.io/rc-chn/marzban:v0.9.5
-SINGBOX_SYNC_AGENT_VERSION=0.9.5
+SINGBOX_NODE_TARGET_IMAGE=ghcr.io/rc-chn/marzban:v0.9.6
+SINGBOX_SYNC_AGENT_VERSION=0.9.6
 ```
 
 默认关闭自动升级。打开 `SINGBOX_NODE_AUTO_UPGRADE=true` 后：
