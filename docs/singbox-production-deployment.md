@@ -4,13 +4,19 @@
 
 本文档记录把当前 Marzban sing-box POC 推到公网生产环境需要完成的工作、推荐部署形态、发布步骤、验证方法和回滚方案。
 
+> v0.10 更新：网络对象、SPF 和 revision 的规范以
+> `singbox-v0.10-network-editor-design.md` 为准。本文较后位置保留的
+> `singbox_node_links`、共享 `12443`、local/SSH 手工下发内容只用于
+> v0.9.6 兼容和排障，新部署使用 Network 工作区、独立有向邻接端口和
+> 节点 pull-sync。
+
 当前 POC 已在 Ubuntu 22.04 容器内验证：
 
 - sing-box `1.13.14` 可作为核心进程启动、检查配置、重启和停止。
 - 公共入口协议覆盖 `hysteria2`、`tuic`、`anytls`、`vmess`、`vless`、`trojan`、`shadowsocks`。
 - 节点间链路默认使用 anyTLS/TCP，Hysteria2/UDP 可选。
-- 一跳任意入、任意出可工作：用户连接任意入口节点，入口节点按用户出口策略转发到指定出口节点。
-- 10 节点全互联配置可生成并通过 `sing-box check`。
+- Connection 可以任意选择入口服务、Direct 出口服务和 routing policy。
+- `max_hops=8` 的有向多跳、cost 选路、链路探测和自动备路已在四节点容器栈验证。
 
 当前代码已经在 POC 基础上补齐 M1 到 M4 的生产骨架：真实数据库表、正式 API、Dashboard 基础控制区、节点配置生成、local/SSH 下发、订阅接入、近似节点统计和最小 bootstrap 脚本。后续仍需要按真实公网节点做证书签发、节点注册安全、监控告警和运维硬化。
 
@@ -73,7 +79,7 @@
 用户访问路径：
 
 ```text
-client -> entry node public inbound -> selected exit outbound -> exit node node-link inbound -> internet
+client -> ingress service -> zero or more computed adjacency directions -> direct egress -> internet
 ```
 
 如果入口和出口是同一台节点：
@@ -82,7 +88,7 @@ client -> entry node public inbound -> selected exit outbound -> exit node node-
 client -> entry node public inbound -> direct internet
 ```
 
-生产初版不做多跳：
+多跳示例：
 
 ```text
 client -> node-a -> node-b -> node-c -> internet
@@ -90,7 +96,7 @@ client -> node-a -> node-b -> node-c -> internet
 
 ### 节点间链路
 
-节点间链路默认用 anyTLS over TCP。
+每条有向邻接可独立选择 AnyTLS/TCP 或 Hysteria2/UDP；默认优先 AnyTLS。
 
 原因：
 
@@ -107,13 +113,15 @@ client -> node-a -> node-b -> node-c -> internet
 - 更严格时启用 mTLS，让出口节点也校验入口节点客户端证书。
 - 内部 CA 只用于节点间链路，不用于面向用户的公网入口证书。
 
-每个出口节点默认开放一个 `node-link-anytls` inbound。每个入口节点为其他出口节点生成一个 anyTLS outbound，例如：
+每条有向邻接在目标节点开放独立 listener，并拥有独立端口、cost、
+探测凭据和 revision 凭据。例如：
 
 ```text
-entry node-a outbound exit-node-b -> exit node-b inbound node-link-anytls
+node-a overlay outbound direction-12 -> node-b overlay inbound direction-12
 ```
 
-对于 10 个节点，全互联有 `10 * 9 = 90` 条有向链路。这个规模仍可接受。
+不要求全互联。十来个节点应只建立实际可达且有冗余价值的邻接；SPF 会在
+这些边上选择最低 cost 的无环路径。
 
 ## 镜像和运行基底
 
@@ -145,10 +153,10 @@ sing-box check -c /etc/marzban-singbox/config.json
 sing-box version
 ```
 
-再跑 Docker POC：
+再跑完整 bootstrap E2E：
 
 ```bash
-./docker/singbox-poc/scripts/run-tests.sh
+bash docker/singbox-bootstrap-e2e/scripts/run-tests.sh
 ```
 
 ## 端口规划
@@ -164,7 +172,8 @@ sing-box version
 | 用户入口 | VLESS | `11005` | TCP |
 | 用户入口 | Trojan | `11006` | TCP |
 | 用户入口 | Shadowsocks | `11007` | TCP/UDP 按实际配置开放 |
-| 节点间链路 | anyTLS | `12443` | TCP |
+| 兼容 node-link | anyTLS | `12443` | TCP |
+| v0.10 有向邻接 | AnyTLS/Hysteria2 | `20000+`，每方向独立 | TCP/UDP |
 
 生产可以继续使用这组端口，也可以按节点改成更隐蔽的端口。无论选择哪种，都必须保证：
 
@@ -185,6 +194,9 @@ ufw allow 11006/tcp
 ufw allow 11007/tcp
 ufw allow 11007/udp
 ufw allow 12443/tcp
+# 按 Network 页面中每条 direction 的实际 transport 放行，不要盲目开放整段：
+ufw allow 20001/tcp
+ufw allow 20007/udp
 ufw reload
 ```
 
@@ -676,7 +688,20 @@ LOGIN_BACKOFF_RESET_SECONDS=900
 
 ## 配置生成和下发流程
 
-生产发布每次配置变更都走同一条流水线。
+v0.10 正常发布流程：
+
+1. 在 `Network` 页面编辑 ingress、egress、adjacency direction、cost 和
+   routing policy 草稿。
+2. 执行 `Validate`，修复端口冲突、失联 Connection 和 stale revision。
+3. 在 `Review topology revision` 确认影响后发布。
+4. 控制面先向参与节点下发新内部 listener、outbound 和转发规则；全部
+   `sing-box check` 并确认后，才切换公网 ingress 规则。
+5. 失败节点不会阻塞链路故障 revision；恢复节点会从 pull-sync 获取当前
+   active revision。手工拓扑变更仍要求所有参与节点确认。
+6. 旧 active revision 保留 120 秒 draining 窗口；staging 检查失败时继续
+   使用原 active revision。
+
+以下是兼容模式和单节点排障时的等价手工流水线，不是 v0.10 日常操作：
 
 1. 控制面读取数据库中的节点、用户、出口策略和链路密钥。
 2. 为每个节点生成完整 sing-box JSON。
@@ -1391,39 +1416,35 @@ curl --proxy socks5h://127.0.0.1:2080 https://ifconfig.me
 
 ### 增加用户
 
-1. 生成用户密码和 UUID。
-2. 写入数据库。
-3. 重生成所有入口节点配置。
-4. 对所有受影响节点执行 `sing-box check`。
-5. 滚动重启入口节点。
-6. 生成订阅并实测连接。
+1. 在 Users 中创建用户并添加 Connection。
+2. 为 Connection 选择 ingress service、Direct egress 和 routing policy。
+3. 应用用户变更，等待相关节点 pull-sync 显示 applied。
+4. 复制聚合订阅并实测协议、入口和出口 IP。
 
 ### 修改用户出口
 
-1. 修改 `users.exit_node_id`。
-2. 重生成该用户可能进入的入口节点配置。
-3. 检查配置。
-4. 滚动重启入口节点。
-5. 验证出口 IP。
+1. 修改 Connection 的 egress service；不要写入计算出的中间节点。
+2. 应用用户变更并查看该 Connection 的 Topology、cost 和 route revision。
+3. 等待相关节点 applied 后验证出口 IP。中间路径由 SPF 自动选择。
 
 ### 增加节点
 
 1. 创建节点记录。
 2. 配置公网访问地址、用户入口证书、内部 CA 节点证书和防火墙。
-3. 为新节点生成到所有旧节点的链路。
-4. 为所有旧节点生成到新节点的链路。
-5. 先部署新节点。
-6. 再滚动更新旧节点。
-7. 验证新节点入、新节点出、旧节点到新节点出。
+3. 复制一次性 enrollment 命令，在新节点只运行这一条 bootstrap 命令。
+4. 在 Network 中只添加需要的双向或单向 adjacency，并为每个方向配置
+   transport、目标端口和 cost。
+5. Validate/Review/Apply topology revision。
+6. 等待探测为 up、route revision active，再验证新节点入口和出口。
 
 ### 删除节点
 
-1. 先禁止该节点作为入口。
-2. 把用户出口迁移到其他节点。
-3. 重生成并下发所有受影响配置。
-4. 确认无流量后禁止该节点作为出口。
-5. 删除节点间链路。
-6. 停止节点服务。
+1. 迁移引用该节点 ingress/egress 的 Connection 和 policy constraint。
+2. 在 Network 草稿中禁用相关服务和 adjacency，发布并确认备路 active。
+3. 确认没有 retained route hop 后删除节点；如果仍保留 route history，API
+   会返回 `409`。当前 POC 没有历史清理 API，应保留 disabled 节点记录，
+   不能直接改库强删。
+4. 停止并移除节点 compose/runtime。
 
 ## 健康检查
 
@@ -1516,6 +1537,14 @@ rollback_applied
 
 M1 到 M4 的代码骨架已经落地：
 
+- v0.10 service/adjacency/observation/topology revision/route revision 数据模型
+  和从 v0.9.6 升级的 additive migration。
+- 有向 bounded SPF、`max_hops`、admin cost、required/avoided node、可关闭的
+  failover 和每 Connection 路径解释。
+- Network 图形草稿、服务拖拽绑定、双向 direction 编辑、协议 profile、
+  Validate/Review/Apply 和 Connection 多跳只读拓扑。
+- 5 秒 pull/probe、15 秒 hold、实际 AnyTLS/Hysteria2+mTLS 探测、两阶段
+  internal-first 发布和失联节点 quorum 排除。
 - 真实数据库迁移：`singbox_nodes`、`singbox_node_links`、`singbox_user_credentials`、`singbox_route_policies`、`singbox_node_usages`。
 - Dashboard 基础接入：`SingBoxPanel`，支持节点级入口 TLS 模式控制和节点 enrollment 命令生成。
 - 正式 API：`/api/singbox/...`。
@@ -1532,7 +1561,7 @@ M1 到 M4 的代码骨架已经落地：
 
 - 控制面 CA 轮换、吊销和节点注册安全流程。
 - enrollment token 审计、吊销和更细的限速策略。
-- 发布审计、配置 diff、人工确认和一键回滚 UI。
+- revision history、配置 diff 和一键回滚 UI。
 - 更完整的客户端订阅兼容性测试。
 - 真实公网监控告警和日志脱敏策略。
 

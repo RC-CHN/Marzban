@@ -69,7 +69,7 @@ TOKEN="$(
 
 install -d -m 0755 "$STATE_DIR"
 nodes_json='[]'
-for node in node-a node-b node-c; do
+for node in node-a node-b node-c node-d; do
   log "creating node $node"
   protocol_settings='{}'
   case "$node" in
@@ -100,6 +100,7 @@ for node in node-a node-b node-c; do
       ;;
     node-b) public_host="172.30.10.12" ;;
     node-c) public_host="172.30.10.13" ;;
+    node-d) public_host="172.30.10.14" ;;
   esac
   payload="$(
     jq -n \
@@ -129,7 +130,50 @@ log "creating sing-box user $USER_NAME with exit policy $EXIT_NODE"
 user_response="$(api POST /api/singbox/users "$user_payload")"
 api POST /api/singbox/links/rebuild >/dev/null
 
-for node in node-a node-b node-c; do
+node_a_id="$(jq -r '.[] | select(.name == "node-a") | .id' "$STATE_DIR/nodes.json")"
+node_b_id="$(jq -r '.[] | select(.name == "node-b") | .id' "$STATE_DIR/nodes.json")"
+node_c_id="$(jq -r '.[] | select(.name == "node-c") | .id' "$STATE_DIR/nodes.json")"
+node_d_id="$(jq -r '.[] | select(.name == "node-d") | .id' "$STATE_DIR/nodes.json")"
+network="$(api GET /api/singbox/network)"
+adjacencies="$(jq -n \
+  --argjson a "$node_a_id" --argjson b "$node_b_id" --argjson c "$node_c_id" --argjson d "$node_d_id" \
+  '[
+    {node_a_id: $a, node_b_id: $c, name: "node-a <-> node-c", enabled: true, directions: [
+      {from_node_id: $a, to_node_id: $c, enabled: true, transport: "anytls", listen_port: 20001, admin_cost: 40, settings: {padding_scheme: ["stop=4", "0=16-32"], idle_session_check_interval: "12s", idle_session_timeout: "45s", min_idle_session: 2}},
+      {from_node_id: $c, to_node_id: $a, enabled: true, transport: "anytls", listen_port: 20002, admin_cost: 40, settings: {padding_scheme: ["stop=4", "0=16-32"], idle_session_check_interval: "12s", idle_session_timeout: "45s", min_idle_session: 2}}
+    ]},
+    {node_a_id: $c, node_b_id: $d, name: "node-c <-> node-d", enabled: true, directions: [
+      {from_node_id: $c, to_node_id: $d, enabled: true, transport: "anytls", listen_port: 20003, admin_cost: 40, settings: {}},
+      {from_node_id: $d, to_node_id: $c, enabled: true, transport: "anytls", listen_port: 20004, admin_cost: 40, settings: {}}
+    ]},
+    {node_a_id: $b, node_b_id: $d, name: "node-d <-> node-b", enabled: true, directions: [
+      {from_node_id: $d, to_node_id: $b, enabled: true, transport: "anytls", listen_port: 20005, admin_cost: 40, settings: {}},
+      {from_node_id: $b, to_node_id: $d, enabled: true, transport: "anytls", listen_port: 20006, admin_cost: 40, settings: {}}
+    ]},
+    {node_a_id: $a, node_b_id: $d, name: "node-a <-> node-d backup", enabled: true, directions: [
+      {from_node_id: $a, to_node_id: $d, enabled: true, transport: "hysteria2", listen_port: 20007, admin_cost: 200, settings: {obfs_type: "salamander", obfs_password: "overlay-e2e", ignore_client_bandwidth: true}},
+      {from_node_id: $d, to_node_id: $a, enabled: true, transport: "hysteria2", listen_port: 20008, admin_cost: 200, settings: {obfs_type: "salamander", obfs_password: "overlay-e2e", ignore_client_bandwidth: true}}
+    ]},
+    {node_a_id: $b, node_b_id: $c, name: "node-c <-> node-b backup", enabled: true, directions: [
+      {from_node_id: $c, to_node_id: $b, enabled: true, transport: "hysteria2", listen_port: 20009, admin_cost: 200, settings: {}},
+      {from_node_id: $b, to_node_id: $c, enabled: true, transport: "hysteria2", listen_port: 20010, admin_cost: 200, settings: {}}
+    ]}
+  ]')"
+network_draft="$(jq -n \
+  --argjson network "$network" \
+  --argjson adjacencies "$adjacencies" \
+  '{
+    base_topology_revision: $network.topology_revision,
+    ingresses: ($network.ingresses | map(del(.node_name, .address))),
+    egresses: ($network.egresses | map(del(.node_name))),
+    adjacencies: $adjacencies,
+    routing_policies: $network.routing_policies
+  }')"
+validation="$(api POST /api/singbox/network/drafts/validate "$network_draft")"
+jq -e '.valid == true and .reachable_connections == .affected_connections' <<<"$validation" >/dev/null
+api POST /api/singbox/network/drafts/apply "$network_draft" >"$STATE_DIR/network-apply.json"
+
+for node in node-a node-b node-c node-d; do
   node_id="$(jq -r --arg name "$node" '.[] | select(.name == $name) | .id' "$STATE_DIR/nodes.json")"
   response="$(api POST "/api/singbox/nodes/$node_id/enrollment" '{"expires_in_seconds":3600}')"
   command="$(jq -r '.command' <<<"$response" | sed 's/| sudo bash/| bash/')"
@@ -153,7 +197,7 @@ done
 
 public_subscription="$(jq -r '.public_subscription.singbox' <<<"$user_response")"
 [ -n "$public_subscription" ] && [ "$public_subscription" != "null" ]
-for entry_node in node-a node-b node-c; do
+for entry_node in node-a node-b node-c node-d; do
   entry_node_id="$(jq -r --arg name "$entry_node" '.[] | select(.name == $name) | .id' "$STATE_DIR/nodes.json")"
   [ -n "$entry_node_id" ] && [ "$entry_node_id" != "null" ]
   subscription_url="${public_subscription}?entry_node_id=$entry_node_id"

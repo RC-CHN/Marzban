@@ -11,9 +11,9 @@ COMPOSE=(docker compose -p "$PROJECT" -f "$ROOT/docker-compose.yml" -f "$ROOT/do
 
 export E2E_PANEL_PORT="$PANEL_PORT"
 export E2E_DASHBOARD_BUILD="$DASHBOARD_BUILD"
-export E2E_NO_PROXY="${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}"
+export E2E_NO_PROXY="${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}"
 
-for node in node-a node-b node-c; do
+for node in node-a node-b node-c node-d; do
   docker rm -f "marzban-singbox-e2e-$node" >/dev/null 2>&1 || true
 done
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -45,10 +45,10 @@ fi
 
 "${COMPOSE[@]}" up -d panel
 "${COMPOSE[@]}" run --rm provisioner
-"${COMPOSE[@]}" up -d whoami node-a node-b node-c
+"${COMPOSE[@]}" up -d whoami node-a node-b node-c node-d
 
 echo "Waiting for enrolled nodes and first heartbeats..."
-for node in node-a node-b node-c; do
+for node in node-a node-b node-c node-d; do
   for _ in $(seq 1 180); do
     if "${COMPOSE[@]}" exec -T "$node" test -f /var/lib/marzban-singbox/sync-state.json >/dev/null 2>&1; then
       break
@@ -64,15 +64,15 @@ for _ in $(seq 1 60); do
     -d 'username=admin&password=admin' \
     "https://127.0.0.1:$PANEL_PORT/api/admin/token" | jq -r '.access_token')"
   nodes="$(curl -kfsS -H "Authorization: Bearer $token" "https://127.0.0.1:$PANEL_PORT/api/singbox/nodes")"
-  if [ "$(jq '[.[] | select(.status == "connected")] | length' <<<"$nodes")" = "3" ]; then
+  if [ "$(jq '[.[] | select(.status == "connected")] | length' <<<"$nodes")" = "4" ]; then
     break
   fi
   sleep 1
 done
-jq -e 'length == 3 and all(.status == "connected")' <<<"$nodes" >/dev/null
+jq -e 'length == 4 and all(.status == "connected")' <<<"$nodes" >/dev/null
 
 printf '\nDevelopment stack is running:\n'
 printf '  URL:      https://127.0.0.1:%s/dashboard/\n' "$PANEL_PORT"
 printf '  Username: admin\n'
 printf '  Password: admin\n'
-printf '  Nodes:    node-a, node-b, node-c (enrolled and connected)\n'
+printf '  Nodes:    node-a, node-b, node-c, node-d (enrolled and connected)\n'

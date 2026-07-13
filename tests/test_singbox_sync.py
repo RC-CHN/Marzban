@@ -119,6 +119,75 @@ report_applied_or_warn "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
             self.assertLessEqual(len(request["message"]), 900)
             self.assertEqual(request["sync_agent_version"], "0.9.5")
 
+    def test_agent_persists_session_ack_and_preserves_legacy_sequence_watermarks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "state.json"
+            response_path = Path(temp_dir) / "response.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "probe_sequences": {"3": 1409},
+                        "ingress_sequences": {"7": 99},
+                    }
+                )
+            )
+            response_path.write_text(
+                json.dumps(
+                    {
+                        "probes": [],
+                        "ingress_generations": {"7": 4},
+                        "state_session": {
+                            "epoch": 2,
+                            "lease_token": "lease-token-for-test",
+                            "accepted_sequence": 0,
+                            "expires_at": "2026-07-13T12:00:30Z",
+                        },
+                    }
+                )
+            )
+            result = self._run_agent_functions(
+                'write_state "hash" "$RESPONSE_PATH" "[]" "[]"; cat "$SYNC_STATE_PATH"',
+                SYNC_STATE_PATH=str(state_path),
+                RESPONSE_PATH=str(response_path),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads(result.stdout)
+            self.assertEqual(state["probe_sequences"], {"3": 1409})
+            self.assertEqual(state["ingress_sequences"], {"7": 99})
+            self.assertEqual(state["ingress_generations"], {"7": 4})
+            self.assertEqual(state["state_session"]["epoch"], 2)
+            self.assertEqual(state["state_session"]["snapshot_sequence"], 0)
+
+    def test_agent_uses_one_snapshot_sequence_and_current_ingress_generation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "state.json"
+            config_path = Path(temp_dir) / "config.json"
+            state_path.write_text(json.dumps({"ingress_generations": {"7": 4}}))
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "inbounds": [
+                            {
+                                "tag": "public-ingress-7",
+                                "type": "anytls",
+                                "listen_port": 11003,
+                            }
+                        ]
+                    }
+                )
+            )
+            result = self._run_agent_functions(
+                "ingress_listener_state() { return 0; }; build_ingress_observations 23",
+                SYNC_STATE_PATH=str(state_path),
+                CONFIG_PATH=str(config_path),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            observations = json.loads(result.stdout)
+            self.assertEqual(observations[0]["sequence"], 23)
+            self.assertEqual(observations[0]["resource_generation"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

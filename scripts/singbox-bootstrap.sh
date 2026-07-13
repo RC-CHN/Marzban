@@ -22,8 +22,8 @@ DATA_DIR="${DATA_DIR:-/var/lib/marzban-singbox}"
 SYNC_ENV_PATH="${SYNC_ENV_PATH:-/etc/marzban-singbox/sync.env}"
 SYNC_STATE_PATH="${SYNC_STATE_PATH:-$DATA_DIR/sync-state.json}"
 SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
-SYNC_AGENT_VERSION="${SYNC_AGENT_VERSION:-0.9.6}"
-SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-60}"
+SYNC_AGENT_VERSION="${SYNC_AGENT_VERSION:-0.10.0-ls1}"
+SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-5}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
 NODE_DOCKER_IMAGE="${NODE_DOCKER_IMAGE:-ghcr.io/rc-chn/marzban:latest}"
 NODE_DOCKER_CONTAINER_NAME="${NODE_DOCKER_CONTAINER_NAME:-marzban-sing-box}"
@@ -573,6 +573,14 @@ curl_tls_args() {
   fi
 }
 
+curl_transport_args() {
+  if is_true "$PANEL_INSECURE"; then
+    printf '%s\n' "-sSLk"
+  else
+    printf '%s\n' "-sSL"
+  fi
+}
+
 check_port_available() {
   local label="$1"
   local port="$2"
@@ -780,13 +788,20 @@ PANEL_URL="${PANEL_URL%/}"
 CONFIG_PATH="${CONFIG_PATH:-/etc/marzban-singbox/config.json}"
 SING_BOX_BIN="${SING_BOX_BIN:-/opt/marzban-singbox/bin/sing-box}"
 SYNC_STATE_PATH="${SYNC_STATE_PATH:-/var/lib/marzban-singbox/sync-state.json}"
+NODE_LINK_DIR="${NODE_LINK_DIR:-/etc/marzban-singbox/node-link}"
 SYNC_SCRIPT_PATH="${SYNC_SCRIPT_PATH:-/usr/local/bin/marzban-singbox-sync}"
-SYNC_AGENT_VERSION="0.9.6"
+SYNC_AGENT_VERSION="0.10.0-ls1"
 REPORT_MESSAGE_MAX_CHARS=900
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/marzban-singbox}"
 SERVICE_NAME="${SERVICE_NAME:-marzban-sing-box}"
 NODE_DOCKER_CONTAINER_NAME="${NODE_DOCKER_CONTAINER_NAME:-marzban-sing-box}"
 NODE_DOCKER_PROJECT_NAME="${NODE_DOCKER_PROJECT_NAME:-marzban-singbox-node}"
+
+if [ -z "${AGENT_INSTANCE_ID:-}" ]; then
+  AGENT_INSTANCE_ID="$(openssl rand -hex 16)"
+  printf 'AGENT_INSTANCE_ID=%q\n' "$AGENT_INSTANCE_ID" >>"$ENV_PATH"
+  chmod 0600 "$ENV_PATH"
+fi
 
 log() {
   printf '[marzban-singbox-sync] %s\n' "$*"
@@ -875,7 +890,7 @@ node_link_listening() {
     printf '%s\n' "false"
     return
   fi
-  port="$(jq -r '.inbounds[]? | select((.tag // "") | startswith("node-link")) | .listen_port' "$CONFIG_PATH" 2>/dev/null | head -n 1)"
+  port="$(jq -r '.inbounds[]? | select(((.tag // "") | startswith("node-link")) or ((.tag // "") | startswith("overlay-in-"))) | .listen_port' "$CONFIG_PATH" 2>/dev/null | head -n 1)"
   if [ -n "$port" ] && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
     printf '%s\n' "true"
   else
@@ -883,11 +898,241 @@ node_link_listening() {
   fi
 }
 
+ingress_listener_state() {
+  local protocol="$1"
+  local port="$2"
+  command -v ss >/dev/null 2>&1 || return 2
+  case "$protocol" in
+    hysteria2|tuic)
+      ss -H -lun "sport = :$port" 2>/dev/null | grep -q .
+      ;;
+    shadowsocks)
+      ss -H -ltn "sport = :$port" 2>/dev/null | grep -q . \
+        && ss -H -lun "sport = :$port" 2>/dev/null | grep -q .
+      ;;
+    *)
+      ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .
+      ;;
+  esac
+}
+
+build_ingress_observations() {
+  local snapshot_sequence="${1:-}"
+  local observations ingress ingress_id protocol port sequence resource_generation state message
+  observations='[]'
+  [ -f "$CONFIG_PATH" ] || {
+    printf '%s\n' "$observations"
+    return
+  }
+  while IFS= read -r ingress; do
+    [ -n "$ingress" ] || continue
+    ingress_id="$(jq -r '.id' <<<"$ingress")"
+    protocol="$(jq -r '.protocol' <<<"$ingress")"
+    port="$(jq -r '.port' <<<"$ingress")"
+    sequence="${snapshot_sequence:-$(( $(jq -r --arg id "$ingress_id" '.ingress_sequences[$id] // 0' "$SYNC_STATE_PATH" 2>/dev/null || printf '0') + 1 ))}"
+    resource_generation="$(jq -r --arg id "$ingress_id" '.ingress_generations[$id] // 1' "$SYNC_STATE_PATH" 2>/dev/null || printf '1')"
+    if ingress_listener_state "$protocol" "$port"; then
+      state="up"
+      message="$protocol listener is active on port $port"
+    else
+      case "$?" in
+        2)
+          state="unknown"
+          message="ss is not installed; listener state cannot be checked"
+          ;;
+        *)
+          state="down"
+          message="$protocol listener is not active on port $port"
+          ;;
+      esac
+    fi
+    observations="$(jq -c \
+      --argjson current "$observations" \
+      --argjson ingress_service_id "$ingress_id" \
+      --argjson sequence "$sequence" \
+      --argjson resource_generation "$resource_generation" \
+      --arg state "$state" \
+      --arg message "$message" \
+      '$current + [{
+        ingress_service_id: $ingress_service_id,
+        sequence: $sequence,
+        resource_generation: $resource_generation,
+        state: $state,
+        hold_seconds: 15,
+        message: $message
+      }]' <<< '{}')"
+  done < <(jq -c '
+    .inbounds[]?
+    | select((.tag // "") | startswith("public-ingress-"))
+    | {
+        id: ((.tag | sub("^public-ingress-"; "")) | tonumber),
+        protocol: .type,
+        port: .listen_port
+      }
+  ' "$CONFIG_PATH" 2>/dev/null || true)
+  printf '%s\n' "$observations"
+}
+
+probe_direction() {
+  local probe="$1" port config_path log_path started_at finished_at pid result state message
+  port=$((35000 + RANDOM % 10000))
+  config_path="$(mktemp)"
+  log_path="$(mktemp)"
+  jq -n \
+    --argjson probe "$probe" \
+    --argjson port "$port" \
+    --arg ca_path "$NODE_LINK_DIR/ca.crt" \
+    --arg client_cert_path "$NODE_LINK_DIR/client.crt" \
+    --arg client_key_path "$NODE_LINK_DIR/client.key" \
+    '{
+      log: {level: "warn"},
+      inbounds: [{type: "mixed", tag: "probe-in", listen: "127.0.0.1", listen_port: $port}],
+      outbounds: [({
+        type: $probe.transport,
+        tag: "probe-out",
+        server: $probe.server,
+        server_port: $probe.server_port,
+        password: $probe.password,
+        tls: {
+          enabled: true,
+          server_name: $probe.server_name,
+          certificate_path: $ca_path,
+          client_certificate_path: $client_cert_path,
+          client_key_path: $client_key_path
+        }
+      }
+      + (if $probe.transport == "hysteria2" then
+          (if $probe.settings.up_mbps != null then {up_mbps: $probe.settings.up_mbps} else {} end)
+          + (if $probe.settings.down_mbps != null then {down_mbps: $probe.settings.down_mbps} else {} end)
+          + (if $probe.settings.obfs_type == "salamander" then
+              {obfs: {type: "salamander", password: $probe.settings.obfs_password}}
+            else {} end)
+        else {
+          idle_session_check_interval: ($probe.settings.idle_session_check_interval // "30s"),
+          idle_session_timeout: ($probe.settings.idle_session_timeout // "30s"),
+          min_idle_session: ($probe.settings.min_idle_session // 0)
+        } end))],
+      route: {final: "probe-out"}
+    }' >"$config_path"
+  started_at="$(date +%s%3N)"
+  "$SING_BOX_BIN" run -c "$config_path" >"$log_path" 2>&1 &
+  pid=$!
+  sleep 0.3
+  if curl "$(curl_transport_args)" --noproxy "" \
+      --socks5-hostname "127.0.0.1:$port" \
+      --max-time 3 "${PANEL_URL%/}/api/singbox/probe" -o /dev/null; then
+    state="up"
+    message="proxy transport probe succeeded"
+  else
+    state="down"
+    message="$(summarize_message "$(<"$log_path")")"
+    [ -n "$message" ] || message="proxy transport probe failed"
+  fi
+  finished_at="$(date +%s%3N)"
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+  rm -f "$config_path" "$log_path"
+  jq -n \
+    --arg state "$state" \
+    --arg message "$message" \
+    --argjson rtt_ms "$((finished_at - started_at))" \
+    '{state: $state, message: $message, rtt_ms: $rtt_ms}'
+}
+
+build_observations() {
+  local snapshot_sequence="${1:-}"
+  local observations probe direction_id sequence resource_generation result tmp_dir metadata_path
+  observations='[]'
+  tmp_dir="$(mktemp -d)"
+  while IFS= read -r probe; do
+    [ -n "$probe" ] || continue
+    direction_id="$(jq -r '.adjacency_direction_id' <<<"$probe")"
+    sequence="${snapshot_sequence:-$(( $(jq -r --arg id "$direction_id" '.probe_sequences[$id] // 0' "$SYNC_STATE_PATH" 2>/dev/null || printf '0') + 1 ))}"
+    resource_generation="$(jq -r '.resource_generation // 1' <<<"$probe")"
+    metadata_path="$tmp_dir/$direction_id.meta"
+    jq -n --argjson direction_id "$direction_id" --argjson sequence "$sequence" \
+      --argjson resource_generation "$resource_generation" \
+      '{direction_id: $direction_id, sequence: $sequence, resource_generation: $resource_generation}' >"$metadata_path"
+    probe_direction "$probe" >"$tmp_dir/$direction_id.result" &
+  done < <(jq -c '.probes[]?' "$SYNC_STATE_PATH" 2>/dev/null || true)
+  wait
+  for metadata_path in "$tmp_dir"/*.meta; do
+    [ -f "$metadata_path" ] || continue
+    direction_id="$(jq -r '.direction_id' "$metadata_path")"
+    sequence="$(jq -r '.sequence' "$metadata_path")"
+    resource_generation="$(jq -r '.resource_generation' "$metadata_path")"
+    result="$(<"$tmp_dir/$direction_id.result")"
+    observations="$(jq -c \
+      --argjson current "$observations" \
+      --argjson result "$result" \
+      --argjson direction_id "$direction_id" \
+      --argjson sequence "$sequence" \
+      --argjson resource_generation "$resource_generation" \
+      '$current + [$result + {
+        adjacency_direction_id: $direction_id,
+        sequence: $sequence,
+        resource_generation: $resource_generation,
+        hold_seconds: 30
+      }]' <<< '{}')"
+  done
+  rm -rf "$tmp_dir"
+  printf '%s\n' "$observations"
+}
+
 write_state() {
   local hash="$1"
+  local response_path="${2:-}"
+  local observations="${3:-[]}"
+  local ingress_observations="${4:-[]}"
+  local probes previous_state state_session ingress_generations
+  probes='[]'
+  previous_state='{}'
+  if [ -f "$SYNC_STATE_PATH" ]; then
+    previous_state="$(jq -c '.' "$SYNC_STATE_PATH" 2>/dev/null || printf '{}')"
+  fi
+  state_session="$(jq -c '.state_session // null' <<<"$previous_state")"
+  ingress_generations="$(jq -c '.ingress_generations // {}' <<<"$previous_state")"
+  if [ -n "$response_path" ] && [ -f "$response_path" ]; then
+    probes="$(jq -c '.probes // []' "$response_path")"
+    ingress_generations="$(jq -c --argjson previous "$previous_state" \
+      '.ingress_generations // $previous.ingress_generations // {}' "$response_path")"
+    state_session="$(jq -c --argjson previous "$previous_state" '
+      if .state_session == null then
+        ($previous.state_session // null)
+      else
+        {
+          epoch: .state_session.epoch,
+          lease_token: (.state_session.lease_token // $previous.state_session.lease_token),
+          snapshot_sequence: .state_session.accepted_sequence,
+          expires_at: .state_session.expires_at
+        }
+      end' "$response_path")"
+  fi
   install -d -m 0755 "$(dirname "$SYNC_STATE_PATH")"
-  jq -n --arg config_hash "$hash" --arg synced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{config_hash: $config_hash, synced_at: $synced_at}' >"$SYNC_STATE_PATH"
+  jq -n \
+    --arg config_hash "$hash" \
+    --arg synced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson probes "$probes" \
+    --argjson observations "$observations" \
+    --argjson ingress_observations "$ingress_observations" \
+    --argjson previous_state "$previous_state" \
+    --argjson state_session "$state_session" \
+    --argjson ingress_generations "$ingress_generations" \
+    '{
+      config_hash: $config_hash,
+      synced_at: $synced_at,
+      probes: $probes,
+      state_session: $state_session,
+      ingress_generations: $ingress_generations,
+      probe_sequences: (($previous_state.probe_sequences // {}) +
+        (reduce $observations[] as $item ({};
+          .[($item.adjacency_direction_id | tostring)] = $item.sequence)
+        )),
+      ingress_sequences: (($previous_state.ingress_sequences // {}) +
+        (reduce $ingress_observations[] as $item ({};
+          .[($item.ingress_service_id | tostring)] = $item.sequence)
+        ))
+    }' >"$SYNC_STATE_PATH"
   chmod 0600 "$SYNC_STATE_PATH"
 }
 
@@ -1071,10 +1316,30 @@ apply_upgrade() {
 }
 
 main() {
-  local response changed hash next_path previous_path check_output restart_output current_hash upgrade_output
+  local response changed hash next_path previous_path check_output restart_output current_hash upgrade_output observations ingress_observations addresses
+  local session_epoch session_lease snapshot_sequence state_session
   response="$(mktemp)"
   trap 'rm -f "${response:-}"' EXIT
   current_hash="$(current_config_hash)"
+  session_epoch="$(jq -r '.state_session.epoch // empty' "$SYNC_STATE_PATH" 2>/dev/null || true)"
+  session_lease="$(jq -r '.state_session.lease_token // empty' "$SYNC_STATE_PATH" 2>/dev/null || true)"
+  if [ -n "$session_epoch" ] && [ -n "$session_lease" ]; then
+    snapshot_sequence="$(( $(jq -r '.state_session.snapshot_sequence // 0' "$SYNC_STATE_PATH" 2>/dev/null || printf '0') + 1 ))"
+    observations="$(build_observations "$snapshot_sequence")"
+    ingress_observations="$(build_ingress_observations "$snapshot_sequence")"
+    state_session="$(jq -n -c \
+      --arg instance_id "$AGENT_INSTANCE_ID" \
+      --arg lease_token "$session_lease" \
+      --argjson epoch "$session_epoch" \
+      --argjson snapshot_sequence "$snapshot_sequence" \
+      '{instance_id: $instance_id, epoch: $epoch, lease_token: $lease_token, snapshot_sequence: $snapshot_sequence}')"
+  else
+    snapshot_sequence=""
+    observations='[]'
+    ingress_observations='[]'
+    state_session="$(jq -n -c --arg instance_id "$AGENT_INSTANCE_ID" '{instance_id: $instance_id}')"
+  fi
+  addresses="$(hostname -I 2>/dev/null | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0))')"
   jq -n \
     --arg token "$NODE_SYNC_TOKEN" \
     --arg node_name "${NODE_NAME:-}" \
@@ -1085,6 +1350,10 @@ main() {
     --arg container_image "$(container_image)" \
     --argjson node_link_listening "$(node_link_listening)" \
     --arg message "heartbeat" \
+    --argjson observations "$observations" \
+    --argjson ingress_observations "$ingress_observations" \
+    --argjson state_session "$state_session" \
+    --argjson addresses "$addresses" \
     '{
       token: $token,
       node_name: $node_name,
@@ -1094,6 +1363,15 @@ main() {
       runtime: $runtime,
       container_image: $container_image,
       node_link_listening: $node_link_listening,
+      capabilities: {
+        sing_box_version: $sing_box_version,
+        supported_transports: ["hysteria2", "anytls"],
+        runtime: $runtime,
+        addresses: $addresses
+      },
+      state_session: $state_session,
+      observations: $observations,
+      ingress_observations: $ingress_observations,
       message: $message
     }' |
     curl "$(curl_tls_args)" \
@@ -1105,7 +1383,7 @@ main() {
   changed="$(jq -r '.changed' "$response")"
   hash="$(jq -r '.config_hash' "$response")"
   if [ "$changed" != "true" ]; then
-    write_state "$hash"
+    write_state "$hash" "$response" "$observations" "$ingress_observations"
     if ! upgrade_output="$(apply_upgrade "$response" 2>&1)"; then
       report_applied_or_warn "$hash" false "$upgrade_output"
       printf '%s\n' "$upgrade_output" >&2
@@ -1139,7 +1417,7 @@ main() {
     printf '%s\n' "$restart_output" >&2
     exit 1
   fi
-  write_state "$hash"
+  write_state "$hash" "$response" "$observations" "$ingress_observations"
   report_applied_or_warn "$hash" true "${restart_output:-applied}"
   log "applied config: $hash"
   if ! upgrade_output="$(apply_upgrade "$response" 2>&1)"; then
@@ -1218,7 +1496,7 @@ enroll_node() {
   install_sing_box_binary
   ensure_directories
 
-  local tmp_dir request_path response_path panel
+  local tmp_dir request_path response_path panel http_status detail attempt delay
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT
   request_path="$tmp_dir/enroll-request.json"
@@ -1247,11 +1525,34 @@ enroll_node() {
       public_csr: $public_csr
     }' >"$request_path"
 
-  curl "$(curl_tls_args)" \
-    -H "Content-Type: application/json" \
-    --data-binary "@$request_path" \
-    "$panel/api/singbox/nodes/enroll" \
-    -o "$response_path"
+  http_status="000"
+  delay=1
+  for attempt in 1 2 3 4 5; do
+    if ! http_status="$(curl "$(curl_transport_args)" \
+      -H "Content-Type: application/json" \
+      --data-binary "@$request_path" \
+      "$panel/api/singbox/nodes/enroll" \
+      -o "$response_path" \
+      -w '%{http_code}')"; then
+      http_status="000"
+    fi
+    if [[ "$http_status" == 2* ]]; then
+      break
+    fi
+    detail="$(jq -r '.detail // empty' "$response_path" 2>/dev/null || true)"
+    case "$http_status" in
+      000|400|409|429|5??)
+        if [ "$attempt" -lt 5 ]; then
+          log "enrollment returned HTTP $http_status${detail:+: $detail}; retrying in ${delay}s"
+          sleep "$delay"
+          delay=$((delay * 2))
+          continue
+        fi
+        ;;
+    esac
+    die "enrollment failed with HTTP $http_status${detail:+: $detail}"
+  done
+  [[ "$http_status" == 2* ]] || die "enrollment failed after retries with HTTP $http_status"
 
   local node_link_ca_path node_cert_path node_key_path client_cert_path client_key_path
   local public_cert_path public_key_path public_ca_path config_next sync_token config_hash

@@ -19,6 +19,11 @@ services:
     environment:
       E2E_INSTALL_DEPS: "true"
 
+  node-d:
+    image: ubuntu:22.04
+    environment:
+      E2E_INSTALL_DEPS: "true"
+
   whoami:
     image: ubuntu:22.04
     environment:

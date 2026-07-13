@@ -1,9 +1,9 @@
 # sing-box bootstrap E2E
 
-This stack builds one panel and bootstraps three Ubuntu 22.04 nodes through the
-same script used by production nodes. It verifies all 21 entry-node/protocol
-combinations, public protocol ingress,
-node-link mTLS, the selected exit node, pull sync, heartbeat reporting, and
+This stack builds one panel and bootstraps four Ubuntu 22.04 nodes through the
+same script used by production nodes. It verifies all 28 entry-node/protocol
+combinations, a real three-hop primary path, cost-based failover, public
+protocol ingress, overlay mTLS, pull sync, authenticated transport probes, and
 legacy agent report compatibility. Public TLS uses the panel's private CA and
 validates IP certificates; the test stack does not use insecure TLS.
 
@@ -50,7 +50,7 @@ cannot contaminate each other.
 
 ## Persistent development stack
 
-Run the real panel, three bootstrapped Ubuntu 22.04 nodes, their sing-box
+Run the real panel, four bootstrapped Ubuntu 22.04 nodes, their sing-box
 containers, and continuous sync agents without the test runner's automatic
 cleanup:
 

@@ -2,11 +2,11 @@ x-e2e-proxy-env: &e2e-proxy-env
   HTTP_PROXY: ${E2E_HTTP_PROXY:-}
   HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
   ALL_PROXY: ${E2E_ALL_PROXY:-}
-  NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+  NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}
   http_proxy: ${E2E_HTTP_PROXY:-}
   https_proxy: ${E2E_HTTPS_PROXY:-}
   all_proxy: ${E2E_ALL_PROXY:-}
-  no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+  no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}
 
 services:
   toolbox:
@@ -18,11 +18,11 @@ services:
         HTTP_PROXY: ${E2E_HTTP_PROXY:-}
         HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
         ALL_PROXY: ${E2E_ALL_PROXY:-}
-        NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+        NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}
         http_proxy: ${E2E_HTTP_PROXY:-}
         https_proxy: ${E2E_HTTPS_PROXY:-}
         all_proxy: ${E2E_ALL_PROXY:-}
-        no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+        no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}
     image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
 
   panel:
@@ -33,11 +33,11 @@ services:
         HTTP_PROXY: ${E2E_HTTP_PROXY:-}
         HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
         ALL_PROXY: ${E2E_ALL_PROXY:-}
-        NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+        NO_PROXY: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}
         http_proxy: ${E2E_HTTP_PROXY:-}
         https_proxy: ${E2E_HTTPS_PROXY:-}
         all_proxy: ${E2E_ALL_PROXY:-}
-        no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,whoami,172.30.10.0/24}
+        no_proxy: ${E2E_NO_PROXY:-localhost,127.0.0.1,panel,node-a,node-b,node-c,node-d,whoami,172.30.10.0/24}
     image: marzban-bootstrap-e2e-panel:latest
     environment:
       <<: *e2e-proxy-env
@@ -47,6 +47,7 @@ services:
       UVICORN_PORT: "8000"
       SINGBOX_EXECUTABLE_PATH: /usr/local/bin/sing-box
       SINGBOX_BOOTSTRAP_PANEL_TLS_VERIFY: "False"
+      SINGBOX_NODE_AUTO_UPGRADE: "True"
       SUDO_USERNAME: admin
       SUDO_PASSWORD: admin
       SQLALCHEMY_DATABASE_URL: sqlite:////var/lib/marzban/e2e.sqlite3
@@ -131,6 +132,26 @@ services:
     networks:
       e2e_net:
         ipv4_address: 172.30.10.13
+    command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
+
+  node-d:
+    image: ${E2E_TOOLBOX_IMAGE:-marzban-singbox-e2e-toolbox:ubuntu22.04}
+    environment:
+      <<: *e2e-proxy-env
+      NODE_NAME: node-d
+      SING_BOX_BINARY_PATH: /opt/marzban/sing-box
+      NODE_DOCKER_CONTAINER_NAME: marzban-singbox-e2e-node-d
+    volumes:
+      - ./scripts:/e2e/scripts:ro
+      - e2e-state:/state:ro
+      - ../../sing-box-1.13.14-linux-amd64/sing-box:/opt/marzban/sing-box:ro
+      - ./runtime/node-d/etc:/etc/marzban-singbox
+      - ./runtime/node-d/data:/var/lib/marzban-singbox
+      - ./runtime/node-d/compose:/opt/marzban-singbox
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      e2e_net:
+        ipv4_address: 172.30.10.14
     command: ["/bin/bash", "/e2e/scripts/node-entrypoint.sh"]
 
   whoami:

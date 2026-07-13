@@ -55,9 +55,9 @@ if [ -f "$COMPOSE_DIR/docker-compose.yml" ]; then
   (
     while true; do
       if ! /usr/local/bin/marzban-singbox-sync; then
-        log "sync failed; retrying in 30 seconds"
+        log "sync failed; retrying in 5 seconds"
       fi
-      sleep 30
+      sleep 5
     done
   ) &
   exec tail -f /dev/null
