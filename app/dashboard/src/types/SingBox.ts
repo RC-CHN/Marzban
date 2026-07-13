@@ -94,10 +94,145 @@ export type SingBoxConnection = {
   entry_node_name: string;
   exit_node_id?: number | null;
   exit_node_name?: string | null;
+  ingress_service_id?: number | null;
+  egress_service_id?: number | null;
+  routing_policy_id?: number | null;
   enabled: boolean;
   sort_order: number;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type NodeAddress = {
+  id: number;
+  node_id: number;
+  address: string;
+  kind: string;
+  is_primary: boolean;
+  enabled: boolean;
+};
+
+export type IngressService = {
+  id?: number;
+  node_id: number;
+  advertised_address_id?: number | null;
+  name: string;
+  protocol: SingBoxProtocol;
+  listen_port: number;
+  enabled: boolean;
+  tls_mode: SingBoxTLSMode;
+  tls_profile: Record<string, unknown>;
+  protocol_profile: Record<string, unknown>;
+  node_name?: string;
+  address?: string;
+  oper_state?: "disabled" | "unknown" | "provisioning" | "up" | "degraded" | "down";
+  observed_at?: string | null;
+  hold_expires_at?: string | null;
+  message?: string | null;
+};
+
+export type EgressService = {
+  id?: number;
+  node_id: number;
+  name: string;
+  kind: "direct";
+  enabled: boolean;
+  settings: Record<string, unknown>;
+  node_name?: string;
+};
+
+export type AdjacencyDirection = {
+  id?: number;
+  from_node_id: number;
+  to_node_id: number;
+  enabled: boolean;
+  transport: "hysteria2" | "anytls";
+  listen_port: number;
+  admin_cost: number;
+  settings: Record<string, unknown>;
+  oper_state?: "disabled" | "unknown" | "provisioning" | "up" | "degraded" | "down";
+  rtt_ms?: number | null;
+  loss_ppm?: number | null;
+  observed_at?: string | null;
+  hold_expires_at?: string | null;
+  message?: string | null;
+};
+
+export type Adjacency = {
+  id?: number;
+  node_a_id: number;
+  node_b_id: number;
+  name: string;
+  enabled: boolean;
+  directions: AdjacencyDirection[];
+};
+
+export type RoutingPolicy = {
+  id?: number;
+  name: string;
+  metric_mode: "admin_only";
+  max_hops: number;
+  allow_degraded: boolean;
+  failover: boolean;
+  required_node_ids: number[];
+  avoided_node_ids: number[];
+};
+
+export type NetworkWorkspace = {
+  topology_revision: number;
+  nodes: SingBoxNode[];
+  addresses: NodeAddress[];
+  ingresses: IngressService[];
+  egresses: EgressService[];
+  adjacencies: Adjacency[];
+  routing_policies: RoutingPolicy[];
+};
+
+export type NetworkDraft = Omit<NetworkWorkspace, "topology_revision" | "nodes" | "addresses"> & {
+  base_topology_revision: number;
+};
+
+export type NetworkValidationIssue = {
+  object_type: string;
+  object_id?: number | null;
+  field?: string | null;
+  code: string;
+  message: string;
+};
+
+export type NetworkValidation = {
+  valid: boolean;
+  issues: NetworkValidationIssue[];
+  affected_connections: number;
+  reachable_connections: number;
+};
+
+export type ConnectionRoute = {
+  connection_id: number;
+  status: string;
+  topology_revision?: number | null;
+  route_revision?: number | null;
+  total_cost?: number | null;
+  hop_count?: number | null;
+  reason?: string | null;
+  hops: Array<{
+    position: number;
+    adjacency_direction_id: number;
+    from_node_id: number;
+    from_node_name: string;
+    to_node_id: number;
+    to_node_name: string;
+    transport: string;
+    admin_cost: number;
+  }>;
+  candidates: Array<{
+    node_ids: number[];
+    node_names: string[];
+    adjacency_direction_ids: number[];
+    total_cost: number;
+    hop_count: number;
+    selected: boolean;
+  }>;
 };
 
 export type ConnectionDraft = Omit<

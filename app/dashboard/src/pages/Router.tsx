@@ -4,6 +4,7 @@ import { getAuthToken } from "../utils/authStorage";
 import { AppShell } from "components/AppShell";
 import { Login } from "./Login";
 import { Nodes } from "./Nodes";
+import { Network } from "./Network";
 import { NodeDetails } from "./NodeDetails";
 import { Overview } from "./Overview";
 import { UserConnections } from "./UserConnections";
@@ -26,6 +27,7 @@ export const router = createHashRouter([
             { path: "users", element: <Users /> },
             { path: "users/:username", element: <UserConnections /> },
             { path: "nodes", element: <Nodes /> },
+            { path: "network", element: <Network /> },
             { path: "nodes/:nodeId", element: <NodeDetails /> },
         ],
     },

@@ -24,7 +24,7 @@ i18n
         {
             debug: import.meta.env.NODE_ENV === "development",
             returnNull: false,
-            fallbackLng: "en",
+            fallbackLng: "zh",
             interpolation: {
                 escapeValue: false,
             },
@@ -33,6 +33,10 @@ i18n
             },
             load: "languageOnly",
             detection: {
+                order: ["localStorage", "sessionStorage", "cookie"],
+                lookupLocalStorage: "marzbanLanguage",
+                lookupSessionStorage: "marzbanLanguage",
+                lookupCookie: "marzbanLanguage",
                 caches: ["localStorage", "sessionStorage", "cookie"],
             },
             backend: {
@@ -44,11 +48,13 @@ i18n
         },
         function (err, t) {
             dayjs.locale(i18n.language);
+            document.documentElement.lang = i18n.language;
         }
     );
 
 i18n.on("languageChanged", (lng) => {
     dayjs.locale(lng);
+    document.documentElement.lang = lng;
 });
 
 // DataPicker

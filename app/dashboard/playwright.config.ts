@@ -2,8 +2,10 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: "live-network.spec.ts",
   outputDir: "/tmp/marzban-dashboard-playwright",
-  fullyParallel: true,
+  fullyParallel: false,
+  workers: 2,
   retries: 0,
   reporter: "line",
   use: {

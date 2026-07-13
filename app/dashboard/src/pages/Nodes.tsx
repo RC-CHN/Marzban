@@ -35,6 +35,7 @@ import { ClipboardIcon, Cog6ToothIcon, PlusIcon, TrashIcon } from "@heroicons/re
 import { PageHeader } from "components/AppShell";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { fetch } from "service/http";
 import { DEFAULT_PUBLIC_PORTS, SINGBOX_PROTOCOLS, SingBoxNode, SingBoxProtocol } from "types/SingBox";
@@ -43,6 +44,7 @@ import { generateErrorMessage, generateSuccessMessage } from "utils/toastHandler
 type Enrollment = { command: string };
 
 export const Nodes = () => {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [newPorts, setNewPorts] = useState({ ...DEFAULT_PUBLIC_PORTS });
@@ -67,7 +69,7 @@ export const Nodes = () => {
     {
       onSuccess: async (data) => {
         await navigator.clipboard.writeText(data.command);
-        generateSuccessMessage("Bootstrap command copied", toast);
+        generateSuccessMessage(t("nodesControl.bootstrapCopied"), toast);
       },
       onError: (error) => { generateErrorMessage(error, toast); },
     }
@@ -79,7 +81,7 @@ export const Nodes = () => {
         refresh();
         deleteModal.onClose();
         setDeletingNode(null);
-        generateSuccessMessage("Node deleted", toast);
+        generateSuccessMessage(t("nodesControl.nodeDeleted"), toast);
       },
       onError: (error) => { generateErrorMessage(error, toast); },
     }
@@ -103,26 +105,26 @@ export const Nodes = () => {
 
   return (
     <VStack align="stretch" spacing={5}>
-      <PageHeader title="Nodes" actions={<Button size="sm" colorScheme="primary" leftIcon={<PlusIcon width="16px" />} onClick={modal.onOpen}>Add node</Button>} />
-      <HStack justify="space-between"><Text fontSize="sm" color="gray.500">Public ingress and one-hop exits</Text><Text fontSize="sm" color="gray.500">{nodes.data?.length || 0} nodes</Text></HStack>
+      <PageHeader title={t("shell.nodes")} actions={<Button size="sm" colorScheme="primary" leftIcon={<PlusIcon width="16px" />} onClick={modal.onOpen}>{t("nodesControl.addNode")}</Button>} />
+      <HStack justify="space-between"><Text fontSize="sm" color="gray.500">{t("nodesControl.subtitle")}</Text><Text fontSize="sm" color="gray.500">{t("nodesControl.count", { count: nodes.data?.length || 0 })}</Text></HStack>
       {nodes.isLoading ? <Skeleton h="300px" /> : (
         <TableContainer bg="white" _dark={{ bg: "gray.800" }}>
           <Table size="sm">
-            <Thead><Tr><Th>Node</Th><Th>Status</Th><Th>Entry</Th><Th>Exit</Th><Th>TLS</Th><Th>Version</Th><Th>Config</Th><Th>Node ports</Th><Th /></Tr></Thead>
+            <Thead><Tr><Th>{t("nodesControl.node")}</Th><Th>{t("network.column.status")}</Th><Th>{t("nodesControl.entry")}</Th><Th>{t("nodesControl.exit")}</Th><Th>TLS</Th><Th>{t("nodesControl.version")}</Th><Th>{t("nodesControl.config")}</Th><Th>{t("nodesControl.nodePorts")}</Th><Th /></Tr></Thead>
             <Tbody>
               {(nodes.data || []).map((node) => {
                 const pending = Boolean(node.last_config_hash && node.last_config_hash !== node.applied_config_hash);
                 return (
                   <Tr key={node.id}>
                     <Td><Button variant="link" color="inherit" fontWeight="medium" onClick={() => navigate(`/nodes/${node.id}`)}>{node.name}</Button><Text fontSize="xs" color="gray.500">{node.public_host}</Text></Td>
-                    <Td><Badge colorScheme={node.status === "connected" ? "green" : node.status === "error" ? "red" : "gray"}>{node.status}</Badge></Td>
+                    <Td><Badge colorScheme={node.status === "connected" ? "green" : node.status === "error" ? "red" : "gray"}>{t(`network.state.${node.status}`, { defaultValue: node.status })}</Badge></Td>
                     <Td><Switch size="sm" isChecked={node.entry_enabled} onChange={(event) => updateNode.mutate({ id: node.id, patch: { entry_enabled: event.target.checked } })} /></Td>
                     <Td><Switch size="sm" isChecked={node.exit_enabled} onChange={(event) => updateNode.mutate({ id: node.id, patch: { exit_enabled: event.target.checked } })} /></Td>
                     <Td><Badge colorScheme={node.public_tls_mode === "ip-insecure" ? "orange" : "green"}>{node.public_tls_mode}</Badge></Td>
                     <Td fontSize="xs">{node.version || "-"}</Td>
-                    <Td><Badge colorScheme={pending ? "orange" : "green"}>{pending ? "pending" : "synced"}</Badge></Td>
-                    <Td><Button size="xs" variant="ghost" leftIcon={<Cog6ToothIcon width="14px" />} onClick={() => navigate(`/nodes/${node.id}?protocol=hysteria2`)}>Configure</Button></Td>
-                    <Td isNumeric><HStack justify="end"><Tooltip label="Copy bootstrap command"><Button size="xs" variant="outline" leftIcon={<ClipboardIcon width="14px" />} isLoading={enroll.isLoading} onClick={() => enroll.mutate(node)}>Enroll</Button></Tooltip><Tooltip label="Delete node"><Button aria-label={`Delete ${node.name}`} size="xs" variant="ghost" colorScheme="red" onClick={() => { setDeletingNode(node); deleteModal.onOpen(); }}><TrashIcon width="15px" /></Button></Tooltip></HStack></Td>
+                    <Td><Badge colorScheme={pending ? "orange" : "green"}>{t(pending ? "overview.pending" : "overview.synced")}</Badge></Td>
+                    <Td><Button size="xs" variant="ghost" leftIcon={<Cog6ToothIcon width="14px" />} onClick={() => navigate(`/nodes/${node.id}?protocol=hysteria2`)}>{t("nodesControl.configure")}</Button></Td>
+                    <Td isNumeric><HStack justify="end"><Tooltip label={t("nodesControl.copyBootstrap")}><Button size="xs" variant="outline" leftIcon={<ClipboardIcon width="14px" />} isLoading={enroll.isLoading} onClick={() => enroll.mutate(node)}>{t("nodesControl.enroll")}</Button></Tooltip><Tooltip label={t("nodesControl.deleteNode")}><Button aria-label={t("nodesControl.deleteNamed", { name: node.name })} size="xs" variant="ghost" colorScheme="red" onClick={() => { setDeletingNode(node); deleteModal.onOpen(); }}><TrashIcon width="15px" /></Button></Tooltip></HStack></Td>
                   </Tr>
                 );
               })}
@@ -132,16 +134,16 @@ export const Nodes = () => {
       )}
 
       <Modal isOpen={modal.isOpen} onClose={modal.onClose} isCentered>
-        <ModalOverlay /><ModalContent><ModalHeader>Add node</ModalHeader><ModalCloseButton />
-          <ModalBody><VStack align="stretch" spacing={4}><FormControl><FormLabel>Name</FormLabel><Input value={name} onChange={(event) => setName(event.target.value)} /></FormControl><FormControl><FormLabel>Public address</FormLabel><Input placeholder="IP or DNS" value={host} onChange={(event) => setHost(event.target.value)} /></FormControl><Box><Text fontSize="sm" fontWeight="medium" mb={2}>Ingress protocol ports</Text><PortFields value={newPorts} onChange={setNewPorts} /></Box><Text fontSize="xs" color="gray.500">Node-link starts at 12443 and selects the next free port during enrollment.</Text></VStack></ModalBody>
-          <ModalFooter><Button variant="ghost" mr={2} onClick={modal.onClose}>Cancel</Button><Button colorScheme="primary" isDisabled={!name || !host || !validPorts(newPorts)} isLoading={addNode.isLoading} onClick={() => addNode.mutate()}>Add node</Button></ModalFooter>
+        <ModalOverlay /><ModalContent><ModalHeader>{t("nodesControl.addNode")}</ModalHeader><ModalCloseButton />
+          <ModalBody><VStack align="stretch" spacing={4}><FormControl><FormLabel>{t("network.field.name")}</FormLabel><Input value={name} onChange={(event) => setName(event.target.value)} /></FormControl><FormControl><FormLabel>{t("nodesControl.publicAddress")}</FormLabel><Input placeholder={t("nodesControl.ipOrDns")} value={host} onChange={(event) => setHost(event.target.value)} /></FormControl><Box><Text fontSize="sm" fontWeight="medium" mb={2}>{t("nodesControl.ingressPorts")}</Text><PortFields value={newPorts} onChange={setNewPorts} /></Box><Text fontSize="xs" color="gray.500">{t("nodesControl.linkPortHelp")}</Text></VStack></ModalBody>
+          <ModalFooter><Button variant="ghost" mr={2} onClick={modal.onClose}>{t("network.action.cancel")}</Button><Button colorScheme="primary" isDisabled={!name || !host || !validPorts(newPorts)} isLoading={addNode.isLoading} onClick={() => addNode.mutate()}>{t("nodesControl.addNode")}</Button></ModalFooter>
         </ModalContent>
       </Modal>
 
       <Modal isOpen={deleteModal.isOpen} onClose={deleteModal.onClose} isCentered>
-        <ModalOverlay /><ModalContent><ModalHeader as="h2">Delete {deletingNode?.name}</ModalHeader><ModalCloseButton />
-          <ModalBody><VStack align="stretch" spacing={3}><Text>Connections using this node must be moved or deleted first.</Text><Text fontSize="sm" color="gray.500">This removes the control-plane record. It does not stop or uninstall the node runtime.</Text></VStack></ModalBody>
-          <ModalFooter><Button variant="ghost" mr={2} onClick={deleteModal.onClose}>Cancel</Button><Button colorScheme="red" isLoading={deleteNode.isLoading} onClick={() => deletingNode && deleteNode.mutate(deletingNode)}>Delete node</Button></ModalFooter>
+        <ModalOverlay /><ModalContent><ModalHeader as="h2">{t("nodesControl.deleteTitle", { name: deletingNode?.name })}</ModalHeader><ModalCloseButton />
+          <ModalBody><VStack align="stretch" spacing={3}><Text>{t("nodesControl.deleteBlockedHelp")}</Text><Text fontSize="sm" color="gray.500">{t("nodesControl.deleteRuntimeHelp")}</Text></VStack></ModalBody>
+          <ModalFooter><Button variant="ghost" mr={2} onClick={deleteModal.onClose}>{t("network.action.cancel")}</Button><Button colorScheme="red" isLoading={deleteNode.isLoading} onClick={() => deletingNode && deleteNode.mutate(deletingNode)}>{t("nodesControl.deleteNode")}</Button></ModalFooter>
         </ModalContent>
       </Modal>
     </VStack>
