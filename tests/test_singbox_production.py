@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.singbox import production
 from app.db.base import Base
-from app.db.models import SingBoxNode, SingBoxUserCredential, User
+from app.db.models import SingBoxIngressService, SingBoxNode, SingBoxUserCredential, User
 from app.models.singbox import SingBoxConnectionWrite
 from app.models.user import UserStatus
 
@@ -146,6 +146,43 @@ class SingBoxProductionTest(unittest.TestCase):
         self.assertEqual(len(connections), 2)
         self.assertNotEqual(connections[0].auth_name, connections[1].auth_name)
         self.assertNotEqual(connections[0].vless_uuid, connections[1].vless_uuid)
+
+    def test_connection_can_select_custom_ingress_service_port_and_profile(self):
+        user = self._user()
+        node = SingBoxNode(name="entry", public_host="entry.example", entry_enabled=True)
+        self.db.add(node)
+        self.db.commit()
+        defaults = production.ensure_node_overlay_services(self.db, node)
+        address = defaults["address"]
+        custom = SingBoxIngressService(
+            node_id=node.id,
+            advertised_address_id=address.id,
+            name="AnyTLS alternate",
+            protocol="anytls",
+            listen_port=15443,
+            enabled=True,
+            tls_mode="ip-insecure",
+            protocol_profile={"min_idle_session": 7},
+        )
+        self.db.add(custom)
+        self.db.commit()
+
+        connection = production.replace_user_connections(
+            self.db,
+            user,
+            [SingBoxConnectionWrite(ingress_service_id=custom.id)],
+        )[0]
+
+        self.assertEqual(connection.protocol, "anytls")
+        self.assertEqual(connection.ingress_service_id, custom.id)
+        config, _ = production.build_node_config(self.db, node.id)
+        inbound = next(item for item in config["inbounds"] if item["tag"] == f"public-ingress-{custom.id}")
+        self.assertEqual(inbound["listen_port"], 15443)
+        self.assertEqual([item["name"] for item in inbound["users"]], [connection.auth_name])
+        subscription = production.build_user_subscription(self.db, user, config_format="sing-box")
+        outbound = next(item for item in subscription["outbounds"] if item["tag"] == f"connection-{connection.id}")
+        self.assertEqual(outbound["server_port"], 15443)
+        self.assertEqual(outbound["min_idle_session"], 7)
 
     def test_delete_node_rejects_referenced_connection(self):
         user = self._user()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Literal
 
 
@@ -80,6 +80,7 @@ class SingBoxUser:
     credentials: SingBoxUserCredentials
     protocols: tuple[Protocol, ...] = SUPPORTED_PROTOCOLS
     entry_node: str | None = None
+    ingress_service_id: int | None = None
 
     def supports(self, protocol: Protocol) -> bool:
         return protocol in self.protocols
@@ -93,6 +94,19 @@ class NodeLink:
     password: str
     protocol: NodeLinkProtocol = "hysteria2"
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class PublicIngress:
+    id: int
+    node_name: str
+    address: str
+    protocol: Protocol
+    listen_port: int
+    enabled: bool = True
+    tls_mode: PublicTLSMode = "system-ca"
+    tls_profile: dict[str, Any] | None = None
+    protocol_profile: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +143,7 @@ class SingBoxConfigBuilder:
     node_link_protocol: NodeLinkProtocol = "hysteria2"
     log_level: str = "info"
     node_links: list[NodeLink] | None = None
+    public_ingresses: list[PublicIngress] | None = None
 
     def __post_init__(self) -> None:
         if self.node_links is None:
@@ -161,7 +176,14 @@ class SingBoxConfigBuilder:
                 )
         return links
 
-    def build_node_config(self, node_name: str) -> dict[str, Any]:
+    def build_node_config(
+        self,
+        node_name: str,
+        overlay_intent: Any | None = None,
+        *,
+        preserve_legacy: bool = False,
+        include_overlay_public_rules: bool = True,
+    ) -> dict[str, Any]:
         node = self._node(node_name)
         public_tags = [f"public-{protocol}" for protocol in SUPPORTED_PROTOCOLS]
         return {
@@ -171,15 +193,39 @@ class SingBoxConfigBuilder:
             },
             "inbounds": [
                 *(self._public_inbounds(node) if node.entry_enabled else []),
-                *self._node_link_inbounds(node_name),
+                *(
+                    (
+                        (self._node_link_inbounds(node_name) if preserve_legacy else [])
+                        + self._overlay_link_inbounds(overlay_intent)
+                    )
+                    if overlay_intent is not None
+                    else self._node_link_inbounds(node_name)
+                ),
             ],
             "outbounds": [
                 {"type": "direct", "tag": "direct"},
                 {"type": "block", "tag": "block"},
-                *self._node_link_outbounds(node_name),
+                *(
+                    (
+                        (self._node_link_outbounds(node_name) if preserve_legacy else [])
+                        + self._overlay_link_outbounds(overlay_intent)
+                    )
+                    if overlay_intent is not None
+                    else self._node_link_outbounds(node_name)
+                ),
             ],
             "route": {
-                "rules": self._route_rules(node_name, public_tags),
+                "rules": (
+                    (
+                        (self._route_rules(node_name, public_tags) if preserve_legacy else [])
+                        + self._overlay_route_rules(
+                            overlay_intent,
+                            include_public=include_overlay_public_rules,
+                        )
+                    )
+                    if overlay_intent is not None
+                    else self._route_rules(node_name, public_tags)
+                ),
                 "final": "direct",
             },
         }
@@ -216,6 +262,33 @@ class SingBoxConfigBuilder:
         }
 
     def _public_inbounds(self, node: SingBoxNode) -> list[dict[str, Any]]:
+        if self.public_ingresses is not None:
+            builders = {
+                "hysteria2": self._hysteria2_inbound,
+                "tuic": self._tuic_inbound,
+                "anytls": self._anytls_inbound,
+                "vmess": self._vmess_inbound,
+                "vless": self._vless_inbound,
+                "trojan": self._trojan_inbound,
+                "shadowsocks": self._shadowsocks_inbound,
+            }
+            inbounds = []
+            for ingress in self.public_ingresses:
+                if not ingress.enabled or ingress.node_name != node.name:
+                    continue
+                inbound = builders[ingress.protocol](self._node_for_ingress(node, ingress))
+                inbound["tag"] = f"public-ingress-{ingress.id}"
+                inbound["listen_port"] = ingress.listen_port
+                allowed_users = {
+                    user.auth_name
+                    for user in self.users
+                    if user.ingress_service_id == ingress.id and user.supports(ingress.protocol)
+                }
+                inbound["users"] = [
+                    user for user in inbound.get("users", []) if user.get("name") in allowed_users
+                ]
+                inbounds.append(inbound)
+            return inbounds
         return [
             self._hysteria2_inbound(node),
             self._tuic_inbound(node),
@@ -395,6 +468,37 @@ class SingBoxConfigBuilder:
             inbound["ignore_client_bandwidth"] = True
         return inbound
 
+    def _overlay_link_inbounds(self, intent: Any) -> list[dict[str, Any]]:
+        inbounds = []
+        for link in intent.link_inbounds:
+            inbound: dict[str, Any] = {
+                "type": link.transport,
+                "tag": f"overlay-in-{link.direction_id}",
+                "listen": "::",
+                "listen_port": link.listen_port,
+                "users": [
+                    {"name": user.auth_name, "password": user.password}
+                    for user in link.users
+                ],
+                "tls": self._server_tls(self.node_link_tls),
+            }
+            if link.transport == "hysteria2":
+                inbound["ignore_client_bandwidth"] = link.settings.get(
+                    "ignore_client_bandwidth", True
+                )
+                for field_name in ("up_mbps", "down_mbps"):
+                    if link.settings.get(field_name) is not None:
+                        inbound[field_name] = link.settings[field_name]
+                if link.settings.get("obfs_type") == "salamander":
+                    inbound["obfs"] = {
+                        "type": "salamander",
+                        "password": link.settings["obfs_password"],
+                    }
+            elif link.settings.get("padding_scheme") is not None:
+                inbound["padding_scheme"] = link.settings["padding_scheme"]
+            inbounds.append(inbound)
+        return inbounds
+
     def _node_link_outbounds(self, node_name: str) -> list[dict[str, Any]]:
         outbounds = []
         for link in self.node_links or []:
@@ -404,6 +508,43 @@ class SingBoxConfigBuilder:
             if not target.exit_enabled:
                 continue
             outbounds.append(self._node_link_outbound(link, target))
+        return outbounds
+
+    def _overlay_link_outbounds(self, intent: Any) -> list[dict[str, Any]]:
+        outbounds = []
+        for link in intent.link_outbounds:
+            if link.transport not in SUPPORTED_NODE_LINK_PROTOCOLS:
+                raise ValueError(f"Unsupported overlay transport: {link.transport}")
+            outbound = {
+                    "type": link.transport,
+                    "tag": link.tag,
+                    "server": link.target_host,
+                    "server_port": link.target_port,
+                    "password": link.password,
+                    "tls": self._client_tls(link.target_host, self.node_link_tls),
+                }
+            if link.transport == "hysteria2":
+                for field_name in ("up_mbps", "down_mbps"):
+                    if link.settings.get(field_name) is not None:
+                        outbound[field_name] = link.settings[field_name]
+                if link.settings.get("obfs_type") == "salamander":
+                    outbound["obfs"] = {
+                        "type": "salamander",
+                        "password": link.settings["obfs_password"],
+                    }
+            else:
+                outbound.update(
+                    {
+                        "idle_session_check_interval": link.settings.get(
+                            "idle_session_check_interval", "30s"
+                        ),
+                        "idle_session_timeout": link.settings.get(
+                            "idle_session_timeout", "30s"
+                        ),
+                        "min_idle_session": link.settings.get("min_idle_session", 0),
+                    }
+                )
+            outbounds.append(outbound)
         return outbounds
 
     def _node_link_outbound(self, link: NodeLink, target: SingBoxNode) -> dict[str, Any]:
@@ -436,6 +577,18 @@ class SingBoxConfigBuilder:
             )
         return rules
 
+    def _overlay_route_rules(self, intent: Any, *, include_public: bool = True) -> list[dict[str, Any]]:
+        return [
+            {
+                "inbound": [rule.inbound_tag],
+                "auth_user": [rule.auth_name],
+                "action": "route",
+                "outbound": rule.outbound_tag,
+            }
+            for rule in intent.route_rules
+            if include_public or rule.inbound_tag.startswith("overlay-in-")
+        ]
+
     def _client_outbound(
         self,
         protocol: Protocol,
@@ -443,6 +596,20 @@ class SingBoxConfigBuilder:
         user: SingBoxUser,
     ) -> dict[str, Any]:
         entry_node = self._node(entry_node_name)
+        if user.ingress_service_id is not None and self.public_ingresses is not None:
+            ingress = next(
+                (
+                    item
+                    for item in self.public_ingresses
+                    if item.id == user.ingress_service_id and item.enabled
+                ),
+                None,
+            )
+            if ingress is None:
+                raise ValueError(f"Ingress service {user.ingress_service_id} is unavailable")
+            if ingress.node_name != entry_node_name or ingress.protocol != protocol:
+                raise ValueError("Ingress service does not match the client target")
+            entry_node = self._node_for_ingress(entry_node, ingress)
         credentials = user.credentials
         if protocol == "hysteria2":
             settings = self._protocol_settings(entry_node, "hysteria2")
@@ -548,6 +715,28 @@ class SingBoxConfigBuilder:
     def _port(self, node: SingBoxNode, protocol: Protocol) -> int:
         ports = node.public_ports or self.ports
         return ports.get(protocol)
+
+    def _node_for_ingress(self, node: SingBoxNode, ingress: PublicIngress) -> SingBoxNode:
+        current_ports = node.public_ports or self.ports
+        ports = ProtocolPorts(
+            **{
+                protocol: ingress.listen_port
+                if protocol == ingress.protocol
+                else current_ports.get(protocol)
+                for protocol in SUPPORTED_PROTOCOLS
+            }
+        )
+        tls_profile = ingress.tls_profile or {}
+        return replace(
+            node,
+            public_host=ingress.address,
+            public_ports=ports,
+            protocol_settings={ingress.protocol: ingress.protocol_profile or {}},
+            public_tls_mode=ingress.tls_mode,
+            public_tls_cert_path=tls_profile.get("cert_path") or node.public_tls_cert_path,
+            public_tls_key_path=tls_profile.get("key_path") or node.public_tls_key_path,
+            public_tls_ca_cert_path=tls_profile.get("ca_cert_path") or node.public_tls_ca_cert_path,
+        )
 
     @staticmethod
     def _protocol_settings(node: SingBoxNode, protocol: Protocol) -> dict[str, Any]:

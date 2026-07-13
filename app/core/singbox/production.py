@@ -13,6 +13,7 @@ from app.core.singbox.config import (
     SUPPORTED_PROTOCOLS,
     SUPPORTED_NODE_LINK_PROTOCOLS,
     NodeLink,
+    PublicIngress,
     Protocol,
     ProtocolPorts,
     RoutePolicy,
@@ -25,11 +26,18 @@ from app.core.singbox.config import (
     config_hash,
 )
 from app.db.models import (
+    SingBoxAdjacency,
+    SingBoxComputedPathHop,
+    SingBoxEgressService,
     SingBoxEnrollmentToken,
+    SingBoxIngressService,
     SingBoxNode as DBSingBoxNode,
+    SingBoxNodeAddress,
     SingBoxNodeLink,
     SingBoxNodeUsage,
     SingBoxRoutePolicy,
+    SingBoxRoutingPolicy,
+    SingBoxRouteRevision,
     SingBoxUserCredential,
     SingBoxUserConnection,
     User,
@@ -143,6 +151,9 @@ def create_node(db: Session, payload: SingBoxNodeCreate) -> DBSingBoxNode:
     db.add(dbnode)
     db.commit()
     db.refresh(dbnode)
+    ensure_node_overlay_services(db, dbnode)
+    db.commit()
+    db.refresh(dbnode)
     if payload.rebuild_links:
         rebuild_full_mesh_links(db)
         rebuild_all_route_policies(db)
@@ -179,18 +190,56 @@ def delete_node(db: Session, dbnode: DBSingBoxNode) -> None:
         .filter(SingBoxUserCredential.exit_node_id == dbnode.id)
         .count()
     )
-    if connection_count or legacy_user_count:
+    enabled_adjacencies = (
+        db.query(SingBoxAdjacency)
+        .filter(
+            SingBoxAdjacency.enabled.is_(True),
+            (SingBoxAdjacency.node_a_id == dbnode.id)
+            | (SingBoxAdjacency.node_b_id == dbnode.id),
+        )
+        .count()
+    )
+    historical_hops = (
+        db.query(SingBoxComputedPathHop)
+        .filter(
+            (SingBoxComputedPathHop.from_node_id == dbnode.id)
+            | (SingBoxComputedPathHop.to_node_id == dbnode.id)
+        )
+        .count()
+    )
+    constrained_policies = [
+        policy.name
+        for policy in db.query(SingBoxRoutingPolicy).all()
+        if dbnode.id in (policy.required_node_ids or [])
+        or dbnode.id in (policy.avoided_node_ids or [])
+    ]
+    if connection_count or legacy_user_count or enabled_adjacencies or historical_hops or constrained_policies:
         references = []
         if connection_count:
             references.append(f"{connection_count} connection(s)")
         if legacy_user_count:
             references.append(f"{legacy_user_count} legacy user policy/policies")
+        if enabled_adjacencies:
+            references.append(f"{enabled_adjacencies} enabled adjacency/adjacencies")
+        if historical_hops:
+            references.append(f"{historical_hops} retained route hop(s)")
+        if constrained_policies:
+            references.append(f"routing policy/policies: {', '.join(constrained_policies)}")
         raise ValueError(f'Node "{dbnode.name}" is used by {" and ".join(references)}')
 
     db.query(SingBoxRoutePolicy).filter(
         (SingBoxRoutePolicy.entry_node_id == dbnode.id)
         | (SingBoxRoutePolicy.exit_node_id == dbnode.id)
     ).delete(synchronize_session=False)
+    for adjacency in (
+        db.query(SingBoxAdjacency)
+        .filter(
+            (SingBoxAdjacency.node_a_id == dbnode.id)
+            | (SingBoxAdjacency.node_b_id == dbnode.id)
+        )
+        .all()
+    ):
+        db.delete(adjacency)
     db.delete(dbnode)
     db.commit()
     rebuild_full_mesh_links(db)
@@ -431,16 +480,52 @@ def replace_user_connections(
     seen_ids: set[int] = set()
 
     for payload in payloads:
-        entry = get_node(db, payload.entry_node_id)
+        requested_ingress = (
+            db.query(SingBoxIngressService)
+            .filter(SingBoxIngressService.id == payload.ingress_service_id)
+            .first()
+            if payload.ingress_service_id is not None
+            else None
+        )
+        entry_node_id = requested_ingress.node_id if requested_ingress else payload.entry_node_id
+        entry = get_node(db, entry_node_id)
         if not entry or (payload.enabled and not entry.entry_enabled):
             raise ValueError("Entry node is missing or does not accept public connections")
-        exit_node = get_node(db, payload.exit_node_id) if payload.exit_node_id is not None else None
-        if payload.exit_node_id is not None and (
-            not exit_node or (payload.enabled and not exit_node.exit_enabled)
-        ):
+        protocol = requested_ingress.protocol if requested_ingress else payload.protocol
+        ingress = requested_ingress or ensure_node_overlay_services(db, entry)["ingresses"].get(protocol)
+        if ingress is None or (payload.enabled and not ingress.enabled):
+            raise ValueError("Ingress service is missing or disabled")
+        if requested_ingress and payload.protocol and requested_ingress.protocol != payload.protocol:
+            raise ValueError("Connection protocol does not match the ingress service")
+
+        requested_egress = (
+            db.query(SingBoxEgressService)
+            .filter(SingBoxEgressService.id == payload.egress_service_id)
+            .first()
+            if payload.egress_service_id is not None
+            else None
+        )
+        requested_exit_node_id = requested_egress.node_id if requested_egress else payload.exit_node_id
+        exit_node = get_node(db, requested_exit_node_id) if requested_exit_node_id is not None else None
+        if requested_exit_node_id is not None and not exit_node:
             raise ValueError("Exit node is missing or is not enabled as an exit")
-        if exit_node and exit_node.id == entry.id:
+        if not requested_egress and exit_node and payload.enabled and not exit_node.exit_enabled:
+            raise ValueError("Exit node is missing or is not enabled as an exit")
+        if not requested_egress and exit_node and exit_node.id == entry.id:
             raise ValueError("Use Direct when the entry and exit node are the same")
+        egress_node = exit_node or entry
+        egress = requested_egress or ensure_node_overlay_services(db, egress_node)["egress"]
+        policy = (
+            db.query(SingBoxRoutingPolicy)
+            .filter(SingBoxRoutingPolicy.id == payload.routing_policy_id)
+            .first()
+            if payload.routing_policy_id is not None
+            else ensure_default_routing_policy(db)
+        )
+        if not egress or not egress.enabled:
+            raise ValueError("Egress service is missing or disabled")
+        if policy is None:
+            raise ValueError("Routing policy is missing")
         if payload.id is not None:
             connection = existing.get(payload.id)
             if connection is None:
@@ -451,12 +536,15 @@ def replace_user_connections(
             db.add(connection)
 
         connection.entry_node_id = entry.id
-        connection.exit_node_id = exit_node.id if exit_node else None
-        connection.protocol = payload.protocol
+        connection.exit_node_id = exit_node.id if exit_node and exit_node.id != entry.id else None
+        connection.ingress_service_id = ingress.id
+        connection.egress_service_id = egress.id
+        connection.routing_policy_id = policy.id
+        connection.protocol = protocol
         connection.label = (payload.label or "").strip() or _connection_label(
             entry.name,
             exit_node.name if exit_node else None,
-            payload.protocol,
+            protocol,
         )
         connection.enabled = payload.enabled
         connection.sort_order = payload.sort_order
@@ -467,6 +555,96 @@ def replace_user_connections(
             db.delete(connection)
     db.commit()
     return get_user_connections(db, user)
+
+
+def ensure_default_routing_policy(db: Session) -> SingBoxRoutingPolicy:
+    policy = db.query(SingBoxRoutingPolicy).filter(SingBoxRoutingPolicy.name == "Default").first()
+    if policy is None:
+        policy = SingBoxRoutingPolicy(
+            name="Default",
+            metric_mode="admin_only",
+            max_hops=8,
+            allow_degraded=False,
+            failover=True,
+            required_node_ids=[],
+            avoided_node_ids=[],
+        )
+        db.add(policy)
+        db.flush()
+    return policy
+
+
+def ensure_node_overlay_services(db: Session, node: DBSingBoxNode) -> dict:
+    address = (
+        db.query(SingBoxNodeAddress)
+        .filter(
+            SingBoxNodeAddress.node_id == node.id,
+            SingBoxNodeAddress.address == node.public_host,
+        )
+        .first()
+    )
+    if address is None:
+        address = SingBoxNodeAddress(
+            node_id=node.id,
+            address=node.public_host,
+            kind="public",
+            is_primary=True,
+            enabled=True,
+        )
+        db.add(address)
+        db.flush()
+
+    ports = _protocol_ports(node.public_ports) or ProtocolPorts()
+    settings = node.protocol_settings or {}
+    ingresses = {
+        service.protocol: service
+        for service in db.query(SingBoxIngressService)
+        .filter(SingBoxIngressService.node_id == node.id)
+        .all()
+    }
+    if node.entry_enabled:
+        for protocol in SUPPORTED_PROTOCOLS:
+            if protocol in ingresses:
+                continue
+            service = SingBoxIngressService(
+                node_id=node.id,
+                advertised_address_id=address.id,
+                name=f"{node.name} / {protocol}",
+                protocol=protocol,
+                listen_port=ports.get(protocol),
+                enabled=True,
+                tls_mode=node.public_tls_mode,
+                tls_profile={
+                    "cert_path": node.public_tls_cert_path,
+                    "key_path": node.public_tls_key_path,
+                    "ca_cert_path": node.public_tls_ca_cert_path,
+                },
+                protocol_profile=settings.get(protocol, {}),
+            )
+            db.add(service)
+            db.flush()
+            ingresses[protocol] = service
+
+    egress = (
+        db.query(SingBoxEgressService)
+        .filter(
+            SingBoxEgressService.node_id == node.id,
+            SingBoxEgressService.kind == "direct",
+        )
+        .first()
+    )
+    if egress is None:
+        egress = SingBoxEgressService(
+            node_id=node.id,
+            name=f"Direct @ {node.name}",
+            kind="direct",
+            enabled=True,
+            settings={},
+        )
+        db.add(egress)
+    ensure_default_routing_policy(db)
+    db.flush()
+    return {"address": address, "ingresses": ingresses, "egress": egress}
 
 
 def build_builder(db: Session) -> SingBoxConfigBuilder:
@@ -481,6 +659,10 @@ def build_builder(db: Session) -> SingBoxConfigBuilder:
         if credential.user_id not in connection_user_ids
     )
     links = [_builder_link(link) for link in db.query(SingBoxNodeLink).all()]
+    public_ingresses = [
+        _builder_ingress(ingress)
+        for ingress in db.query(SingBoxIngressService).order_by(SingBoxIngressService.id).all()
+    ]
     policies = _route_policies(db)
     return SingBoxConfigBuilder(
         nodes=nodes,
@@ -493,6 +675,7 @@ def build_builder(db: Session) -> SingBoxConfigBuilder:
         public_tls=_public_tls(),
         node_link_tls=_node_link_tls(),
         node_links=links,
+        public_ingresses=public_ingresses,
     )
 
 
@@ -501,7 +684,56 @@ def build_node_config(db: Session, node_id: int) -> tuple[dict, str]:
     if node is None:
         raise ValueError("Node not found")
     builder = build_builder(db)
-    config = builder.build_node_config(node.name)
+    route = (
+        db.query(SingBoxRouteRevision)
+        .filter(SingBoxRouteRevision.status == "active")
+        .order_by(SingBoxRouteRevision.number.desc())
+        .first()
+    )
+    if route is None:
+        config = builder.build_node_config(node.name)
+    else:
+        from app.core.singbox.routing.compiler import (
+            compile_route_revision,
+            internal_only,
+            merge_intents,
+        )
+
+        intent = compile_route_revision(db, route)[node.id]
+        draining = (
+            db.query(SingBoxRouteRevision)
+            .filter(
+                SingBoxRouteRevision.status == "draining",
+                SingBoxRouteRevision.drain_until > datetime.utcnow(),
+            )
+            .order_by(SingBoxRouteRevision.number.desc())
+            .first()
+        )
+        if draining:
+            intent = merge_intents(intent, internal_only(compile_route_revision(db, draining)[node.id]))
+        config = builder.build_node_config(node.name, intent)
+    return config, config_hash(config)
+
+
+def build_node_config_for_route(
+    db: Session,
+    node_id: int,
+    route_revision_id: int,
+) -> tuple[dict, str]:
+    node = get_node(db, node_id)
+    route = (
+        db.query(SingBoxRouteRevision)
+        .filter(SingBoxRouteRevision.id == route_revision_id)
+        .first()
+    )
+    if node is None:
+        raise ValueError("Node not found")
+    if route is None:
+        raise ValueError("Route revision not found")
+    from app.core.singbox.routing.compiler import compile_route_revision
+
+    intent = compile_route_revision(db, route).get(node.id)
+    config = build_builder(db).build_node_config(node.name, intent)
     return config, config_hash(config)
 
 
@@ -782,6 +1014,27 @@ def _builder_connection(connection: SingBoxUserConnection) -> SingBoxUser:
         ),
         protocols=(_protocol(connection.protocol),),
         entry_node=connection.entry_node.name,
+        ingress_service_id=connection.ingress_service_id,
+    )
+
+
+def _builder_ingress(ingress: SingBoxIngressService) -> PublicIngress:
+    address = ingress.advertised_address
+    if address is None:
+        address = next(
+            (item for item in ingress.node.addresses if item.is_primary and item.enabled),
+            None,
+        )
+    return PublicIngress(
+        id=ingress.id,
+        node_name=ingress.node.name,
+        address=address.address if address else ingress.node.public_host,
+        protocol=_protocol(ingress.protocol),
+        listen_port=ingress.listen_port,
+        enabled=ingress.enabled,
+        tls_mode=ingress.tls_mode,
+        tls_profile=ingress.tls_profile or {},
+        protocol_profile=ingress.protocol_profile or {},
     )
 
 

@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import datetime
 
 from sqlalchemy import (
@@ -359,6 +360,7 @@ class SingBoxNode(Base):
     node_link_port = Column(Integer, nullable=False, default=12443, server_default='12443')
     public_ports = Column(JSON, nullable=True)
     protocol_settings = Column(JSON, nullable=True)
+    capabilities = Column(JSON, nullable=True)
     deploy_method = Column(String(32), nullable=False, default="manual", server_default="manual")
     ssh_host = Column(String(256), nullable=True)
     ssh_user = Column(String(64), nullable=True)
@@ -401,6 +403,15 @@ class SingBoxNode(Base):
     )
     usages = relationship("SingBoxNodeUsage", back_populates="node", cascade="all, delete-orphan")
     enrollments = relationship("SingBoxEnrollmentToken", back_populates="node", cascade="all, delete-orphan")
+    addresses = relationship("SingBoxNodeAddress", back_populates="node", cascade="all, delete-orphan")
+    ingress_services = relationship("SingBoxIngressService", back_populates="node", cascade="all, delete-orphan")
+    egress_services = relationship("SingBoxEgressService", back_populates="node", cascade="all, delete-orphan")
+    state_session = relationship(
+        "SingBoxNodeStateSession",
+        back_populates="node",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     @property
     def sync_enabled(self) -> bool:
@@ -425,6 +436,22 @@ class SingBoxEnrollmentToken(Base):
     node = relationship("SingBoxNode", back_populates="enrollments")
 
 
+class SingBoxNodeStateSession(Base):
+    __tablename__ = "singbox_node_state_sessions"
+
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"), primary_key=True)
+    epoch = Column(BigInteger, nullable=False, default=0, server_default="0")
+    instance_id = Column(String(64), nullable=False)
+    lease_token_hash = Column(String(64), nullable=False)
+    last_sequence = Column(BigInteger, nullable=False, default=0, server_default="0")
+    status = Column(String(32), nullable=False, default="active", server_default="active")
+    issued_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+
+    node = relationship("SingBoxNode", back_populates="state_session")
+
+
 class SingBoxNodeLink(Base):
     __tablename__ = "singbox_node_links"
     __table_args__ = (
@@ -445,6 +472,302 @@ class SingBoxNodeLink(Base):
 
     from_node = relationship("SingBoxNode", back_populates="links_from", foreign_keys=[from_node_id])
     to_node = relationship("SingBoxNode", back_populates="links_to", foreign_keys=[to_node_id])
+
+
+class SingBoxNodeAddress(Base):
+    __tablename__ = "singbox_node_addresses"
+    __table_args__ = (UniqueConstraint("node_id", "address"),)
+
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False, index=True)
+    address = Column(String(256), nullable=False)
+    kind = Column(String(32), nullable=False, default="public", server_default="public")
+    is_primary = Column(Boolean, nullable=False, default=False, server_default="0")
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node = relationship("SingBoxNode", back_populates="addresses")
+
+
+class SingBoxIngressService(Base):
+    __tablename__ = "singbox_ingress_services"
+    __table_args__ = (UniqueConstraint("node_id", "protocol", "listen_port"),)
+
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False, index=True)
+    advertised_address_id = Column(Integer, ForeignKey("singbox_node_addresses.id"), nullable=True)
+    name = Column(String(128), nullable=False)
+    protocol = Column(String(32), nullable=False)
+    listen_port = Column(Integer, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    tls_mode = Column(String(32), nullable=False, default="system-ca", server_default="system-ca")
+    tls_profile = Column(JSON, nullable=True)
+    protocol_profile = Column(JSON, nullable=True)
+    generation = Column(BigInteger, nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node = relationship("SingBoxNode", back_populates="ingress_services")
+    advertised_address = relationship("SingBoxNodeAddress", foreign_keys=[advertised_address_id])
+    observation = relationship(
+        "SingBoxIngressObservation",
+        back_populates="ingress_service",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class SingBoxIngressObservation(Base):
+    __tablename__ = "singbox_ingress_observations"
+
+    ingress_service_id = Column(
+        Integer,
+        ForeignKey("singbox_ingress_services.id"),
+        primary_key=True,
+    )
+    reporting_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    sequence = Column(BigInteger, nullable=False, default=0, server_default="0")
+    resource_generation = Column(BigInteger, nullable=False, default=1, server_default="1")
+    session_epoch = Column(BigInteger, nullable=False, default=0, server_default="0")
+    snapshot_sequence = Column(BigInteger, nullable=False, default=0, server_default="0")
+    oper_state = Column(String(32), nullable=False, default="unknown", server_default="unknown")
+    observed_at = Column(DateTime, nullable=True)
+    hold_expires_at = Column(DateTime, nullable=True)
+    message = Column(String(1024), nullable=True)
+
+    ingress_service = relationship("SingBoxIngressService", back_populates="observation")
+    reporting_node = relationship("SingBoxNode", foreign_keys=[reporting_node_id])
+
+
+class SingBoxEgressService(Base):
+    __tablename__ = "singbox_egress_services"
+    __table_args__ = (UniqueConstraint("node_id", "kind", "name"),)
+
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    kind = Column(String(32), nullable=False, default="direct", server_default="direct")
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    settings = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node = relationship("SingBoxNode", back_populates="egress_services")
+
+
+class SingBoxAdjacency(Base):
+    __tablename__ = "singbox_adjacencies"
+    __table_args__ = (UniqueConstraint("node_a_id", "node_b_id"),)
+
+    id = Column(Integer, primary_key=True)
+    node_a_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    node_b_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    name = Column(String(128), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node_a = relationship("SingBoxNode", foreign_keys=[node_a_id])
+    node_b = relationship("SingBoxNode", foreign_keys=[node_b_id])
+    directions = relationship(
+        "SingBoxAdjacencyDirection",
+        back_populates="adjacency",
+        cascade="all, delete-orphan",
+    )
+
+
+class SingBoxAdjacencyDirection(Base):
+    __tablename__ = "singbox_adjacency_directions"
+    __table_args__ = (
+        UniqueConstraint("adjacency_id", "from_node_id", "to_node_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    adjacency_id = Column(Integer, ForeignKey("singbox_adjacencies.id"), nullable=False, index=True)
+    from_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    to_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    transport = Column(String(32), nullable=False, default="anytls", server_default="anytls")
+    listen_port = Column(Integer, nullable=False)
+    admin_cost = Column(Integer, nullable=False, default=100, server_default="100")
+    settings = Column(JSON, nullable=True)
+    credential_generation = Column(Integer, nullable=False, default=1, server_default="1")
+    generation = Column(BigInteger, nullable=False, default=1, server_default="1")
+    probe_auth_name = Column(
+        String(128),
+        nullable=False,
+        unique=True,
+        default=lambda: f"probe-{secrets.token_hex(12)}",
+    )
+    probe_password = Column(
+        String(256),
+        nullable=False,
+        default=lambda: secrets.token_urlsafe(32),
+    )
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    adjacency = relationship("SingBoxAdjacency", back_populates="directions")
+    from_node = relationship("SingBoxNode", foreign_keys=[from_node_id])
+    to_node = relationship("SingBoxNode", foreign_keys=[to_node_id])
+    observation = relationship(
+        "SingBoxLinkStateObservation",
+        back_populates="direction",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class SingBoxLinkStateObservation(Base):
+    __tablename__ = "singbox_link_state_observations"
+
+    adjacency_direction_id = Column(
+        Integer,
+        ForeignKey("singbox_adjacency_directions.id"),
+        primary_key=True,
+    )
+    reporting_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    sequence = Column(BigInteger, nullable=False, default=0, server_default="0")
+    resource_generation = Column(BigInteger, nullable=False, default=1, server_default="1")
+    session_epoch = Column(BigInteger, nullable=False, default=0, server_default="0")
+    snapshot_sequence = Column(BigInteger, nullable=False, default=0, server_default="0")
+    oper_state = Column(String(32), nullable=False, default="unknown", server_default="unknown")
+    rtt_ms = Column(Float, nullable=True)
+    loss_ppm = Column(Integer, nullable=True)
+    bandwidth_mbps = Column(Float, nullable=True)
+    observed_at = Column(DateTime, nullable=True)
+    hold_expires_at = Column(DateTime, nullable=True)
+    message = Column(String(1024), nullable=True)
+
+    direction = relationship("SingBoxAdjacencyDirection", back_populates="observation")
+    reporting_node = relationship("SingBoxNode", foreign_keys=[reporting_node_id])
+
+
+class SingBoxRoutingPolicy(Base):
+    __tablename__ = "singbox_routing_policies_v2"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False, unique=True)
+    metric_mode = Column(String(32), nullable=False, default="admin_only", server_default="admin_only")
+    max_hops = Column(Integer, nullable=False, default=8, server_default="8")
+    allow_degraded = Column(Boolean, nullable=False, default=False, server_default="0")
+    failover = Column(Boolean, nullable=False, default=True, server_default="1")
+    required_node_ids = Column(JSON, nullable=True)
+    avoided_node_ids = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SingBoxTopologyRevision(Base):
+    __tablename__ = "singbox_topology_revisions"
+
+    id = Column(Integer, primary_key=True)
+    number = Column(Integer, nullable=False, unique=True)
+    status = Column(String(32), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    snapshot = Column(JSON, nullable=False)
+    created_by = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SingBoxRouteRevision(Base):
+    __tablename__ = "singbox_route_revisions"
+
+    id = Column(Integer, primary_key=True)
+    number = Column(Integer, nullable=False, unique=True)
+    topology_revision_id = Column(Integer, ForeignKey("singbox_topology_revisions.id"), nullable=False)
+    status = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    activated_at = Column(DateTime, nullable=True)
+    drain_until = Column(DateTime, nullable=True)
+
+    topology_revision = relationship("SingBoxTopologyRevision")
+    computed_paths = relationship("SingBoxComputedPath", back_populates="route_revision", cascade="all, delete-orphan")
+    node_revisions = relationship("SingBoxNodeRouteRevision", back_populates="route_revision", cascade="all, delete-orphan")
+    hop_credentials = relationship(
+        "SingBoxRouteHopCredential",
+        back_populates="route_revision",
+        cascade="all, delete-orphan",
+    )
+
+
+class SingBoxRouteHopCredential(Base):
+    __tablename__ = "singbox_route_hop_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "route_revision_id",
+            "egress_service_id",
+            "routing_policy_id",
+            "adjacency_direction_id",
+        ),
+        UniqueConstraint("auth_name"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    route_revision_id = Column(Integer, ForeignKey("singbox_route_revisions.id"), nullable=False, index=True)
+    egress_service_id = Column(Integer, ForeignKey("singbox_egress_services.id"), nullable=False)
+    routing_policy_id = Column(Integer, ForeignKey("singbox_routing_policies_v2.id"), nullable=False)
+    adjacency_direction_id = Column(Integer, ForeignKey("singbox_adjacency_directions.id"), nullable=False)
+    auth_name = Column(String(128), nullable=False)
+    password = Column(String(256), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    route_revision = relationship("SingBoxRouteRevision", back_populates="hop_credentials")
+    egress_service = relationship("SingBoxEgressService")
+    routing_policy = relationship("SingBoxRoutingPolicy")
+    adjacency_direction = relationship("SingBoxAdjacencyDirection")
+
+
+class SingBoxComputedPath(Base):
+    __tablename__ = "singbox_computed_paths"
+    __table_args__ = (UniqueConstraint("route_revision_id", "connection_id"),)
+
+    id = Column(Integer, primary_key=True)
+    route_revision_id = Column(Integer, ForeignKey("singbox_route_revisions.id"), nullable=False, index=True)
+    connection_id = Column(Integer, ForeignKey("singbox_user_connections.id"), nullable=False, index=True)
+    total_cost = Column(Integer, nullable=True)
+    hop_count = Column(Integer, nullable=True)
+    status = Column(String(32), nullable=False)
+    reason = Column(String(1024), nullable=True)
+
+    route_revision = relationship("SingBoxRouteRevision", back_populates="computed_paths")
+    connection = relationship("SingBoxUserConnection", foreign_keys=[connection_id])
+    hops = relationship("SingBoxComputedPathHop", back_populates="computed_path", cascade="all, delete-orphan")
+
+
+class SingBoxComputedPathHop(Base):
+    __tablename__ = "singbox_computed_path_hops"
+    __table_args__ = (UniqueConstraint("computed_path_id", "position"),)
+
+    id = Column(Integer, primary_key=True)
+    computed_path_id = Column(Integer, ForeignKey("singbox_computed_paths.id"), nullable=False, index=True)
+    position = Column(Integer, nullable=False)
+    adjacency_direction_id = Column(Integer, ForeignKey("singbox_adjacency_directions.id"), nullable=False)
+    from_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+    to_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
+
+    computed_path = relationship("SingBoxComputedPath", back_populates="hops")
+    adjacency_direction = relationship("SingBoxAdjacencyDirection")
+    from_node = relationship("SingBoxNode", foreign_keys=[from_node_id])
+    to_node = relationship("SingBoxNode", foreign_keys=[to_node_id])
+
+
+class SingBoxNodeRouteRevision(Base):
+    __tablename__ = "singbox_node_route_revisions"
+    __table_args__ = (UniqueConstraint("node_id", "route_revision_id"),)
+
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False, index=True)
+    route_revision_id = Column(Integer, ForeignKey("singbox_route_revisions.id"), nullable=False, index=True)
+    desired_hash = Column(String(64), nullable=True)
+    applied_hash = Column(String(64), nullable=True)
+    state = Column(String(32), nullable=False, default="pending", server_default="pending")
+    message = Column(String(1024), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node = relationship("SingBoxNode", foreign_keys=[node_id])
+    route_revision = relationship("SingBoxRouteRevision", back_populates="node_revisions")
 
 
 class SingBoxUserCredential(Base):
@@ -494,6 +817,9 @@ class SingBoxUserConnection(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     entry_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=False)
     exit_node_id = Column(Integer, ForeignKey("singbox_nodes.id"), nullable=True)
+    ingress_service_id = Column(Integer, ForeignKey("singbox_ingress_services.id"), nullable=True)
+    egress_service_id = Column(Integer, ForeignKey("singbox_egress_services.id"), nullable=True)
+    routing_policy_id = Column(Integer, ForeignKey("singbox_routing_policies_v2.id"), nullable=True)
     protocol = Column(String(32), nullable=False)
     label = Column(String(128), nullable=False)
     auth_name = Column(String(128), nullable=False, unique=True)
@@ -510,6 +836,9 @@ class SingBoxUserConnection(Base):
     user = relationship("User", back_populates="singbox_connections")
     entry_node = relationship("SingBoxNode", foreign_keys=[entry_node_id])
     exit_node = relationship("SingBoxNode", foreign_keys=[exit_node_id])
+    ingress_service = relationship("SingBoxIngressService", foreign_keys=[ingress_service_id])
+    egress_service = relationship("SingBoxEgressService", foreign_keys=[egress_service_id])
+    routing_policy = relationship("SingBoxRoutingPolicy", foreign_keys=[routing_policy_id])
 
 
 class SingBoxNodeUsage(Base):

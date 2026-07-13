@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from app.core.singbox import ca as singbox_ca
+from app.core.singbox import network as singbox_network
+from app.core.singbox.routing import publication as singbox_publication
 from app.core.singbox.config import SUPPORTED_PROTOCOLS, ProtocolPorts, config_hash
 from app.core.singbox.operations import deploy_node_config
 from app.core.singbox.poc import (
@@ -42,6 +44,12 @@ from app.models.singbox import (
     SingBoxNodeSyncAppliedResponse,
     SingBoxNodeSyncRequest,
     SingBoxNodeSyncResponse,
+    SingBoxNodeStateSessionResponse,
+    SingBoxConnectionRouteResponse,
+    SingBoxNetworkApplyResponse,
+    SingBoxNetworkDraft,
+    SingBoxNetworkValidationResponse,
+    SingBoxNetworkWorkspaceResponse,
     SingBoxSubscriptionLinks,
     SingBoxUsageRecord,
     SingBoxUsageReport,
@@ -68,6 +76,11 @@ router = APIRouter(
     prefix="/api/singbox",
     responses={401: responses._401, 403: responses._403},
 )
+
+
+@router.get("/probe", status_code=204, include_in_schema=False)
+def probe_node_link():
+    return None
 
 
 class ExitPolicyRequest(BaseModel):
@@ -120,6 +133,9 @@ def _connection_response(connection) -> SingBoxConnectionResponse:
         entry_node_name=connection.entry_node.name,
         exit_node_id=connection.exit_node_id,
         exit_node_name=connection.exit_node.name if connection.exit_node else None,
+        ingress_service_id=connection.ingress_service_id,
+        egress_service_id=connection.egress_service_id,
+        routing_policy_id=connection.routing_policy_id,
         enabled=connection.enabled,
         sort_order=connection.sort_order,
         created_at=connection.created_at,
@@ -223,7 +239,57 @@ def get_status(
             for node in nodes
         ],
         "traffic_accounting": "approximate",
+        "routing": singbox_network.get_routing_status(db),
     }
+
+
+@router.get("/network", response_model=SingBoxNetworkWorkspaceResponse)
+def get_network_workspace(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    return singbox_network.get_workspace(db)
+
+
+@router.post("/network/drafts/validate", response_model=SingBoxNetworkValidationResponse)
+def validate_network_draft(
+    payload: SingBoxNetworkDraft,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    return singbox_network.validate_draft(db, payload)
+
+
+@router.post(
+    "/network/drafts/apply",
+    response_model=SingBoxNetworkApplyResponse,
+    responses={409: responses._409},
+)
+def apply_network_draft(
+    payload: SingBoxNetworkDraft,
+    db: Session = Depends(get_db),
+    admin: Admin = Depends(Admin.check_sudo_admin),
+):
+    validation = singbox_network.validate_draft(db, payload)
+    if not validation.valid:
+        status_code = 409 if any(issue.code == "stale_revision" for issue in validation.issues) else 400
+        raise HTTPException(status_code=status_code, detail=validation.model_dump(mode="json"))
+    return singbox_network.apply_draft(db, payload, actor=admin.username)
+
+
+@router.get(
+    "/connections/{connection_id}/route",
+    response_model=SingBoxConnectionRouteResponse,
+)
+def get_connection_route(
+    connection_id: int,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    route = singbox_network.get_connection_route(db, connection_id)
+    if route is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return route
 
 
 @router.get("/ca/status")
@@ -284,7 +350,9 @@ def enroll_node(
             client_csr=payload.client_csr,
             public_csr=payload.public_csr,
         )
-        config, hash_value = production.build_node_config(db, node.id)
+        config, hash_value, route_revision, rollout_phase = singbox_publication.desired_node_config(
+            db, node
+        )
         sync_token = production.issue_node_sync_token(db, node)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -332,7 +400,25 @@ def sync_node_config(
     if payload.node_name and payload.node_name != node.name:
         raise HTTPException(status_code=400, detail="Node sync token does not match this node")
     try:
-        config, hash_value = production.build_node_config(db, node.id)
+        state_session = singbox_network.reconcile_state_session(db, node, payload.state_session)
+        accept_reports = state_session is None or state_session.accept_reports
+        singbox_network.record_link_state(
+            db,
+            node,
+            payload.capabilities,
+            payload.observations if accept_reports else [],
+            state_session=state_session,
+        )
+        config, hash_value, route_revision, rollout_phase = singbox_publication.desired_node_config(
+            db, node
+        )
+        singbox_network.record_ingress_state(
+            db,
+            node,
+            payload.ingress_observations if accept_reports else [],
+            config_is_current=payload.current_config_hash == hash_value,
+            state_session=state_session,
+        )
     except (RuntimeError, ValueError) as exc:
         production.update_node_heartbeat(
             db,
@@ -345,6 +431,14 @@ def sync_node_config(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     changed = payload.current_config_hash != hash_value
+    if not changed and route_revision is not None and rollout_phase in {"staging", "activating"}:
+        route_revision, rollout_phase = singbox_publication.report_applied(
+            db,
+            node,
+            hash_value,
+            True,
+            payload.message,
+        )
     agent_url = f"{str(request.base_url).rstrip('/')}/api/singbox/sync-agent.sh"
     upgrade = production.build_node_upgrade_instruction(
         runtime=payload.runtime,
@@ -368,6 +462,21 @@ def sync_node_config(
         changed=changed,
         config=config if changed else None,
         upgrade=upgrade,
+        topology_revision=singbox_network.get_workspace(db).topology_revision,
+        route_revision=route_revision,
+        rollout_phase=rollout_phase,
+        state_session=(
+            SingBoxNodeStateSessionResponse(
+                epoch=state_session.epoch,
+                lease_token=state_session.lease_token,
+                accepted_sequence=state_session.accepted_sequence,
+                expires_at=state_session.expires_at,
+            )
+            if state_session
+            else None
+        ),
+        probes=singbox_network.get_probe_instructions(db, node.id),
+        ingress_generations=singbox_network.get_ingress_generations(db, node.id),
     )
 
 
@@ -384,6 +493,13 @@ def report_node_sync_applied(
     if node is None:
         raise HTTPException(status_code=403, detail="Invalid node sync token")
     status = NodeStatus.connected if payload.success else NodeStatus.error
+    route_revision, rollout_phase = singbox_publication.report_applied(
+        db,
+        node,
+        payload.config_hash,
+        payload.success,
+        payload.message,
+    )
     production.update_node_heartbeat(
         db,
         node,
@@ -399,6 +515,8 @@ def report_node_sync_applied(
         status=status,
         config_hash=payload.config_hash,
         applied_config_hash=node.applied_config_hash,
+        route_revision=route_revision,
+        rollout_phase=rollout_phase,
     )
 
 
